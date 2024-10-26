@@ -1,8 +1,11 @@
 const express = require('express');
 const app = express();
 const cors = require('cors');
+const jwt = require('jsonwebtoken')
 require('dotenv').config()
 const port = process.env.PORT || 5000;
+
+
 
 // middleware
 app.use(cors());
@@ -35,27 +38,35 @@ async function run() {
      
 
   //  jwt related api
-   app.post('/jwt', async (req, res) => {
-    const user = req.body;
-    const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '1h' });
-    res.send({ token });
-  })
+  app.post('/jwt', async (req, res) => {
+    try {
+      const user = req.body;
+      const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '1h' });
+      res.send({ token });
+    } catch (error) {
+      console.error('Error generating token:', error);
+      res.status(500).send({ message: 'Internal server error' });
+    }
+  });
 
 
   // middlewares 
   const verifyToken = (req, res, next) => {
-    if (!req.headers.authorization) {
-      return res.status(401).send({ message: 'unauthorized access' });
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).send({ message: 'Unauthorized access' });
     }
-    const token = req.headers.authorization.split(' ')[1];
+  
+    const token = authHeader.split(' ')[1];
     jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
       if (err) {
-        return res.status(401).send({ message: 'unauthorized access' })
+        return res.status(401).send({ message: 'Unauthorized access' });
       }
       req.decoded = decoded;
       next();
-    })
-  }
+    });
+  };
+  
 
 
 
@@ -75,7 +86,7 @@ const verifyAdmin = async (req, res, next) => {
 
 
   // users related api
-  app.get('/users', verifyToken, verifyAdmin, async (req, res) => {
+  app.get('/users',verifyToken, verifyAdmin,   async (req, res) => {
     const result = await userCollection.find().toArray();
     res.send(result);
   });
@@ -98,8 +109,6 @@ const verifyAdmin = async (req, res, next) => {
 
   app.post('/users', async (req, res) => {
     const user = req.body;
-    // insert email if user doesnt exists: 
-    // you can do this many ways (1. email unique, 2. upsert 3. simple checking)
     const query = { email: user.email }
     const existingUser = await userCollection.findOne(query);
     if (existingUser) {
@@ -109,11 +118,8 @@ const verifyAdmin = async (req, res, next) => {
     res.send(result);
   });
 
-
-  app.get('/users',  async (req, res) => {
-    const result = await userCollection.find().toArray();
-    res.send(result);
-  })
+  
+ 
 
 
   app.get('/courses',  async (req, res) => {
@@ -122,6 +128,37 @@ const verifyAdmin = async (req, res, next) => {
   })
 
 
+  
+  app.get('/courses/:id', async (req, res) => {
+    const id = req.params.id;
+    const query = { _id: new ObjectId(id) }
+    const result = await coursesCollection.findOne(query);
+    res.send(result);
+  })
+
+  // Add this PATCH endpoint to your Express server
+  app.patch('/users/:id', async (req, res) => {
+    try {
+      const id = req.params.id;
+      const updatedFields = req.body;
+      
+      // Update the user document in the database
+      const result = await userCollection.updateOne({ _id: new ObjectId(id) }, { $set: updatedFields });
+      
+      if (result.modifiedCount === 1) {
+        // User updated successfully
+        res.status(200).send({ message: 'User updated successfully' });
+      } else {
+        // No user found with the given ID
+        res.status(404).send({ message: 'User not found' });
+      }
+    } catch (error) {
+      // Handle any errors
+      console.error('Error updating user:', error);
+      res.status(500).send({ message: 'Internal server error' });
+    }
+  });
+  
 
      // Send a ping to confirm a successful connection
      await client.db("admin").command({ ping: 1 });
