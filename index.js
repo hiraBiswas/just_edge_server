@@ -26,9 +26,12 @@ const isValidObjectId = (id) => /^[0-9a-fA-F]{24}$/.test(id);
 async function run() {
   try {
     const userCollection = client.db("just_edge").collection("users");
-    const studentCollection = client.db("just_edge").collection("students");
+    const studentsCollection = client.db("just_edge").collection("students");
     const coursesCollection = client.db("just_edge").collection("courses");
+    const batchesCollection = client.db("just_edge").collection("batches");
+    
 
+ 
     // JWT-related API
     app.post("/jwt", async (req, res) => {
       try {
@@ -125,7 +128,7 @@ async function run() {
     // Get all students API
     app.get("/students", async (req, res) => {
       try {
-        const result = await studentCollection.find().toArray();
+        const result = await studentsCollection.find().toArray();
         res.send(result);
       } catch (error) {
         console.error("Error fetching students:", error);
@@ -133,16 +136,74 @@ async function run() {
       }
     });
 
-    app.get("/students/:userId", async (req, res) => {
-      const userId = req.params.userId;
-      const query = { userId: new ObjectId(userId) };
-      const student = await studentCollection.findOne(query);
-      if (student) {
-        res.send(student);
-      } else {
-        res.status(404).send({ message: "Student not found" });
-      }
-    });
+
+
+// PATCH /students/:id
+app.patch("/students/:id", async (req, res) => {
+  const { id } = req.params; // Get the student ID from the URL parameter
+  console.log(`Attempting to update student with ID: ${id}`);
+  
+  // Check if the provided student ID is a valid ObjectId
+  if (!isValidObjectId(id)) {
+    return res.status(400).send({ error: "Invalid student ID format" });
+  }
+
+  try {
+    // Extract the fields to update from the request body
+    const updateFields = req.body; // This will directly get the fields passed in the request
+    
+    // Perform the update operation in the "students" collection
+    const result = await studentsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updateFields }
+    );
+
+    console.log("Update result:", result); // Log the update result
+
+    // Check if any document was updated
+    if (result.modifiedCount === 1) {
+      res.status(200).send({ message: "Student updated successfully" });
+    } else {
+      res.status(404).send({ message: "Student not found or no fields updated" });
+    }
+  } catch (error) {
+    console.error("Error updating student:", error);
+    res.status(500).send({ message: "Server error" });
+  }
+});
+
+
+
+
+    // PATCH API to archive (set isDeleted to true) a student
+    // app.patch("/students/:userId", async (req, res) => {
+    //   const userId = req.params.userId;
+    
+    //   // Check for a valid ObjectId
+    //   if (!isValidObjectId(userId)) {
+    //     return res.status(400).send({ error: "Invalid user ID format" });
+    //   }
+    
+    //   try {
+    //     // Convert `userId` to ObjectId for querying the MongoDB document
+    //     const result = await studentCollection.updateOne(
+    //       { userId: new ObjectId(userId) }, // Search by `userId` converted to ObjectId
+    //       { $set: { isDeleted: true } }      // Example field to update
+    //     );
+    
+    //     // Respond based on whether a document was modified
+    //     if (result.modifiedCount === 1) {
+    //       res.status(200).send({ message: "Student archived successfully" });
+    //     } else {
+    //       res.status(404).send({ message: "Student not found or already archived" });
+    //     }
+    //   } catch (error) {
+    //     console.error("Error archiving student:", error);
+    //     res.status(500).send({ message: "Server error" });
+    //   }
+    // });
+    
+
 
     
     app.patch("/courses/:courseId", async (req, res) => {
@@ -217,15 +278,111 @@ async function run() {
     });
 
 
+  
+
+    app.post('/batches', async (req, res) => {
+      const item = req.body;
+  
+    
+      // Convert course_id to ObjectId if it's not already
+      if (item.course_id && typeof item.course_id === 'string') {
+        item.course_id = new ObjectId(item.course_id);
+      }
+    
+      try {
+        const result = await batchesCollection.insertOne(item);
+        res.send(result);
+      } catch (error) {
+        console.error('Error saving batch:', error);
+        res.status(500).send('Error saving batch');
+      }
+    });
+    
+
+    app.get('/batches/:id', async (req, res) => {
+      const { id } = req.params; // Get the batch ID from the URL parameters
+    
+      // Ensure the provided ID is a valid MongoDB ObjectId
+      if (!isValidObjectId(id)) {
+        return res.status(400).json({ message: 'Invalid batch ID format' });
+      }
+    
+      try {
+        // Query the database for the batch by its ID
+        const batch = await batchesCollection.findOne({ _id: new ObjectId(id) });
+    
+        if (!batch) {
+          return res.status(404).json({ message: 'Batch not found' });
+        }
+    
+        // Return the batch data as a JSON response
+        res.json(batch);
+      } catch (error) {
+        console.error("Error fetching batch details:", error);
+        res.status(500).json({ message: 'Error fetching batch details' });
+      }
+    });
+    
+    
+
+    // Get all batches API
+app.get("/batches", async (req, res) => {
+  try {
+      const batches = await batchesCollection.find({ isDeleted: false }).toArray(); // Fetch batches that are not deleted
+      res.send(batches);
+  } catch (error) {
+      console.error("Error fetching batches:", error);
+      res.status(500).send({ message: "Internal server error" });
+  }
+});
+
+
+
+// PATCH /batches/:id
+app.patch("/batches/:id", async (req, res) => {
+  const { id } = req.params;
+
+  // Validate the batch ID format
+  if (!isValidObjectId(id)) {
+    return res.status(400).send({ error: "Invalid batch ID format" });
+  }
+
+  try {
+    const updatedFields = req.body; // Fields to be updated (batchName, status, startDate, endDate, etc.)
+
+    // Update the batch in the MongoDB collection
+    const result = await batchesCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updatedFields }
+    );
+
+    if (result.modifiedCount === 1) {
+      res.status(200).send({ message: "Batch updated successfully" });
+    } else {
+      res.status(404).send({ message: "Batch not found or no fields updated" });
+    }
+  } catch (error) {
+    console.error("Error updating batch:", error);
+    res.status(500).send({ message: "Internal server error" });
+  }
+});
+
+
+
+    await client.db("admin").command({ ping: 1 });
+    console.log("Pinged your deployment. You successfully connected to MongoDB!");
 
   } finally {
-    // Uncomment the line below if you want to close the client after running
     // await client.close();
   }
 }
 
 run().catch(console.dir);
 
+app.get('/', (req, res) => {
+  res.send('just_edge is connecting');
+});
+
 app.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
+  console.log(`justEdge is sitting on port ${port}`);
 });
