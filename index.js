@@ -4,7 +4,6 @@ const cors = require("cors");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
 const port = process.env.PORT || 5000;
-
 // middleware
 app.use(cors());
 app.use(express.json());
@@ -23,12 +22,22 @@ const client = new MongoClient(uri, {
 
 const isValidObjectId = (id) => /^[0-9a-fA-F]{24}$/.test(id);
 
+var admin = require("firebase-admin");
+
+var serviceAccount = require("./just-edge-firebase-adminsdk-4c6bb-01ad5b3eda.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+
 async function run() {
   try {
     const userCollection = client.db("just_edge").collection("users");
     const studentsCollection = client.db("just_edge").collection("students");
     const coursesCollection = client.db("just_edge").collection("courses");
     const batchesCollection = client.db("just_edge").collection("batches");
+    const instructorsCollection = client.db("just_edge").collection("instructors");
+    const instructorsBatchesCollection = client.db("just_edge").collection("instructors-batches");
     
 
  
@@ -143,69 +152,43 @@ app.patch("/students/:id", async (req, res) => {
   const { id } = req.params; // Get the student ID from the URL parameter
   console.log(`Attempting to update student with ID: ${id}`);
   
-  // Check if the provided student ID is a valid ObjectId
+  // Validate if the provided student ID is a valid ObjectId
   if (!isValidObjectId(id)) {
-    return res.status(400).send({ error: "Invalid student ID format" });
+    return res.status(400).json({ error: "Invalid student ID format" });
   }
 
   try {
-    // Extract the fields to update from the request body
-    const updateFields = req.body; // This will directly get the fields passed in the request
-    
-    // Perform the update operation in the "students" collection
+    const updateFields = { ...req.body }; // Extract fields to update from the request body
+
+    // Check if `enrolled_batch` is being updated and validate its format
+    if (updateFields.enrolled_batch) {
+      if (!isValidObjectId(updateFields.enrolled_batch)) {
+        return res.status(400).json({ error: "Invalid enrolled_batch ID format" });
+      }
+      // Convert to ObjectId if valid
+      updateFields.enrolled_batch = new ObjectId(updateFields.enrolled_batch);
+    }
+
+    // Perform the update operation
     const result = await studentsCollection.updateOne(
-      { _id: new ObjectId(id) },
-      { $set: updateFields }
+      { _id: new ObjectId(id) }, // Filter by the student ID
+      { $set: updateFields } // Update the specified fields
     );
 
     console.log("Update result:", result); // Log the update result
 
-    // Check if any document was updated
     if (result.modifiedCount === 1) {
-      res.status(200).send({ message: "Student updated successfully" });
+      res.status(200).json({ message: "Student updated successfully" });
     } else {
-      res.status(404).send({ message: "Student not found or no fields updated" });
+      res.status(404).json({ message: "Student not found or no fields updated" });
     }
   } catch (error) {
     console.error("Error updating student:", error);
-    res.status(500).send({ message: "Server error" });
+    res.status(500).json({ message: "Server error" });
   }
 });
 
 
-
-
-    // PATCH API to archive (set isDeleted to true) a student
-    // app.patch("/students/:userId", async (req, res) => {
-    //   const userId = req.params.userId;
-    
-    //   // Check for a valid ObjectId
-    //   if (!isValidObjectId(userId)) {
-    //     return res.status(400).send({ error: "Invalid user ID format" });
-    //   }
-    
-    //   try {
-    //     // Convert `userId` to ObjectId for querying the MongoDB document
-    //     const result = await studentCollection.updateOne(
-    //       { userId: new ObjectId(userId) }, // Search by `userId` converted to ObjectId
-    //       { $set: { isDeleted: true } }      // Example field to update
-    //     );
-    
-    //     // Respond based on whether a document was modified
-    //     if (result.modifiedCount === 1) {
-    //       res.status(200).send({ message: "Student archived successfully" });
-    //     } else {
-    //       res.status(404).send({ message: "Student not found or already archived" });
-    //     }
-    //   } catch (error) {
-    //     console.error("Error archiving student:", error);
-    //     res.status(500).send({ message: "Server error" });
-    //   }
-    // });
-    
-
-
-    
     app.patch("/courses/:courseId", async (req, res) => {
       const { courseId } = req.params;
       console.log(`Attempting to update course with ID: ${courseId}`);
@@ -233,7 +216,6 @@ app.patch("/students/:id", async (req, res) => {
       }
     });
     
-
 
     // Courses API
     app.get("/courses", async (req, res) => {
@@ -326,15 +308,72 @@ app.patch("/students/:id", async (req, res) => {
     
 
     // Get all batches API
+// app.get("/batches", async (req, res) => {
+//   try {
+//       const batches = await batchesCollection.find({ isDeleted: false }).toArray(); // Fetch batches that are not deleted
+//       res.send(batches);
+//   } catch (error) {
+//       console.error("Error fetching batches:", error);
+//       res.status(500).send({ message: "Internal server error" });
+//   }
+// });
+
+
+
 app.get("/batches", async (req, res) => {
   try {
-      const batches = await batchesCollection.find({ isDeleted: false }).toArray(); // Fetch batches that are not deleted
-      res.send(batches);
+    // Step 1: Fetch batches and instructorIds (simplified version)
+    const batches = await batchesCollection.aggregate([
+      { $match: { isDeleted: false } },
+      {
+        $lookup: {
+          from: "instructors-batches",
+          localField: "_id",
+          foreignField: "batchId",
+          as: "batchInstructors",
+        },
+      },
+      {
+        $addFields: {
+          instructorIds: { 
+            $map: { input: "$batchInstructors", as: "batchInstructor", in: "$$batchInstructor.instructorId" },
+          },
+        },
+      },
+      {
+        $project: { 
+          _id: 1, 
+          batchName: 1, 
+          course_id: 1, 
+          status: 1, 
+          startDate: 1, 
+          endDate: 1, 
+          enrolledStudentNumber: 1,  // Make sure to include this
+          instructorIds: 1, 
+        },
+      }
+    ]).toArray();
+
+    // Step 2: Fetch user details for the instructors
+    const instructorIds = batches.flatMap(batch => batch.instructorIds);
+    const users = await userCollection.find({ _id: { $in: instructorIds } }).toArray();
+
+    // Step 3: Attach the user names (instructors) to the batches
+    batches.forEach(batch => {
+      batch.instructors = batch.instructorIds.map(id => {
+        const user = users.find(user => user._id.toString() === id.toString());
+        return user ? user.name : "Unassigned";
+      });
+    });
+
+    // Return the batches with complete details
+    res.send(batches); 
   } catch (error) {
-      console.error("Error fetching batches:", error);
-      res.status(500).send({ message: "Internal server error" });
+    console.error("Error fetching batches:", error);
+    res.status(500).send({ message: "Internal server error", error: error.message });
   }
 });
+
 
 
 
@@ -363,6 +402,82 @@ app.patch("/batches/:id", async (req, res) => {
     }
   } catch (error) {
     console.error("Error updating batch:", error);
+    res.status(500).send({ message: "Internal server error" });
+  }
+});
+
+
+app.post('/instructors', async (req, res) => {
+  const item = req.body;
+
+  // Ensure the userId is converted to an ObjectId type
+  if (item.userId) {
+    item.userId = new ObjectId(item.userId);
+  }
+
+  const result = await instructorsCollection.insertOne(item);
+  res.send(result);
+});
+
+
+app.get("/instructors", async (req, res) => {
+  try {
+    const result = await instructorsCollection.find().toArray();
+    res.send(result);
+  } catch (error) {
+    console.error("Error fetching instructors:", error);
+    res.status(500).send({ message: "Internal server error" });
+  }
+});
+
+
+// Assign an instructor to a batch
+app.post("/instructors-batches", async (req, res) => {
+  const { instructorId, batchId } = req.body;
+
+  if (!instructorId || !batchId) {
+    return res.status(400).send({ error: "instructorId and batchId are required." });
+  }
+
+  if (!isValidObjectId(instructorId) || !isValidObjectId(batchId)) {
+    return res.status(400).send({ error: "Invalid instructorId or batchId format." });
+  }
+
+  try {
+    const existingRelation = await instructorsBatchesCollection.findOne({
+      instructorId: new ObjectId(instructorId),
+      batchId: new ObjectId(batchId),
+    });
+
+    if (existingRelation) {
+      return res.status(409).send({ message: "This instructor is already assigned to the batch." });
+    }
+    
+
+    const newRelation = {
+      instructorId: new ObjectId(instructorId),
+      batchId: new ObjectId(batchId),
+      createdAt: new Date(),
+    };
+
+    const result = await instructorsBatchesCollection.insertOne(newRelation);
+
+    res.status(201).send({
+      message: "Relationship created successfully.",
+      data: { id: result.insertedId },
+    });
+  } catch (error) {
+    console.error("Error creating instructor-batch relationship:", error.message);
+    res.status(500).send({ error: "Internal server error." });
+  }
+});
+
+app.get("/instructors-batches", async (req, res) => {
+  try {
+    const result = await instructorsBatchesCollection.find().toArray();
+    res.send(result);
+  } catch (error) {
+    console.error("Error fetching instructors:", error);
     res.status(500).send({ message: "Internal server error" });
   }
 });
