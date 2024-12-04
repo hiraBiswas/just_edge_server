@@ -22,13 +22,13 @@ const client = new MongoClient(uri, {
 
 const isValidObjectId = (id) => /^[0-9a-fA-F]{24}$/.test(id);
 
-var admin = require("firebase-admin");
+// var admin = require("firebase-admin");
 
-var serviceAccount = require("./just-edge-firebase-adminsdk-4c6bb-01ad5b3eda.json");
+// var serviceAccount = require("./just-edge-firebase-adminsdk-4c6bb-01ad5b3eda.json");
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
+// admin.initializeApp({
+//   credential: admin.credential.cert(serviceAccount)
+// });
 
 async function run() {
   try {
@@ -38,6 +38,7 @@ async function run() {
     const batchesCollection = client.db("just_edge").collection("batches");
     const instructorsCollection = client.db("just_edge").collection("instructors");
     const instructorsBatchesCollection = client.db("just_edge").collection("instructors-batches");
+    const routineCollection = client.db("just_edge").collection("routine");
     
 
  
@@ -482,6 +483,61 @@ app.get("/instructors-batches", async (req, res) => {
   }
 });
 
+
+app.post("/routine", async (req, res) => {
+  const { batchId, schedule } = req.body;
+  console.log("Received batchId:", batchId);
+  console.log("Received schedule:", schedule);
+
+  // Validate input
+  if (!batchId) {
+    return res.status(400).json({ message: "BatchId is required" });
+  }
+  if (!schedule) {
+    return res.status(400).json({ message: "Schedule is required" });
+  }
+
+  // Validate the batchId to make sure it's a valid MongoDB ObjectId
+  if (!ObjectId.isValid(batchId)) {
+    return res.status(400).json({ message: "Invalid batchId format" });
+  }
+
+  try {
+    
+    const newRoutine = {
+      batchId: new ObjectId(batchId),
+      schedule: schedule,
+      createdAt: new Date(),
+    };
+
+    const result = await routineCollection.insertOne(newRoutine);
+    
+    return res.status(201).json({
+      message: "Routine saved successfully",
+      routineId: result.insertedId,
+    });
+  } catch (error) {
+    console.error("Detailed error saving routine:", error);
+    
+    // More detailed error response
+    return res.status(500).json({ 
+      message: "Error saving routine", 
+      error: error.toString(),
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+
+app.get("/routine", async (req, res) => {
+  try {
+    const result = await routineCollection.find().toArray();
+    res.send(result);
+  } catch (error) {
+    console.error("Error fetching routine:", error);
+    res.status(500).send({ message: "Internal server error" });
+  }
+});
 
 
     await client.db("admin").command({ ping: 1 });
