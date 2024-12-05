@@ -8,6 +8,7 @@ const port = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
+
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const uri = "mongodb+srv://just_edge:gFMaSV8z7Wg3TwGS@cluster0.eogwfq1.mongodb.net/?retryWrites=true&w=majority";
 
@@ -382,7 +383,7 @@ app.get("/batches", async (req, res) => {
 app.patch("/batches/:id", async (req, res) => {
   const { id } = req.params;
 
-  // Validate the batch ID format
+   // Validate the batch ID format
   if (!isValidObjectId(id)) {
     return res.status(400).send({ error: "Invalid batch ID format" });
   }
@@ -538,6 +539,75 @@ app.get("/routine", async (req, res) => {
     res.status(500).send({ message: "Internal server error" });
   }
 });
+
+
+// Fetch routine by batchId
+app.get("/routine/:batchId", async (req, res) => {
+  const { batchId } = req.params;
+
+  // Validate batchId
+  if (!ObjectId.isValid(batchId)) {
+    return res.status(400).json({ message: "Invalid batchId format" });
+  }
+
+  try {
+    const routine = await routineCollection.findOne({ batchId: new ObjectId(batchId) });
+
+    if (!routine) {
+      return res.status(404).json({ message: "No routine found for this batch" });
+    }
+
+    res.status(200).json(routine);
+  } catch (error) {
+    console.error("Error fetching routine:", error);
+    res.status(500).json({ message: "Error fetching routine" });
+  }
+});
+
+
+app.patch('/routine/:batchId', async (req, res) => {
+  const { batchId } = req.params;  // Get batchId from the URL parameters
+  const { schedule } = req.body;   // Get updated schedule from the request body
+
+  console.log('Incoming PATCH Request for batchId:', batchId);
+  console.log('Updated Schedule:', schedule);
+
+  if (!ObjectId.isValid(batchId)) {
+    return res.status(400).send({ error: "Invalid batch ID format" });
+  }
+
+  try {
+    // Convert batchId to ObjectId before querying (use 'new' keyword)
+    const existingRoutine = await routineCollection.findOne({ batchId: new ObjectId(batchId) });
+
+    if (!existingRoutine) {
+      // If routine with the batchId doesn't exist
+      console.log(`Routine not found for batchId: ${batchId}`);
+      return res.status(404).json({ message: 'Routine not found' });
+    }
+
+    // If routine exists, update the schedule
+    const updateResult = await routineCollection.updateOne(
+      { batchId: new ObjectId(batchId) }, // Use 'new ObjectId()' here
+      { $set: { schedule } }  // Update the schedule field
+    );
+
+    if (updateResult.modifiedCount === 0) {
+      // If no changes were made
+      return res.status(400).json({ message: 'No changes were made to the routine.' });
+    }
+
+    // Fetch and send back the updated routine
+    const updatedRoutine = await routineCollection.findOne({ batchId: new ObjectId(batchId) });
+    res.status(200).json(updatedRoutine);
+  } catch (error) {
+    console.error('Error updating routine:', error);
+    res.status(500).json({ message: 'Failed to update the routine', error: error.message });
+  }
+});
+;
+
+
 
 
     await client.db("admin").command({ ping: 1 });
