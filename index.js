@@ -219,16 +219,17 @@ app.patch("/students/:id", async (req, res) => {
     });
     
 
-    // Courses API
     app.get("/courses", async (req, res) => {
       try {
         const result = await coursesCollection.find().toArray();
+        console.log(result);  // Log to see what data is being returned
         res.send(result);
       } catch (error) {
         console.error("Error fetching courses:", error);
         res.status(500).send({ message: "Internal server error" });
       }
     });
+    
 
     app.get("/courses/:id", async (req, res) => {
       const courseId = req.params.id;
@@ -484,7 +485,6 @@ app.get("/instructors-batches", async (req, res) => {
   }
 });
 
-
 app.post("/routine", async (req, res) => {
   const { batchId, schedule } = req.body;
   console.log("Received batchId:", batchId);
@@ -504,7 +504,6 @@ app.post("/routine", async (req, res) => {
   }
 
   try {
-    
     const newRoutine = {
       batchId: new ObjectId(batchId),
       schedule: schedule,
@@ -513,19 +512,13 @@ app.post("/routine", async (req, res) => {
 
     const result = await routineCollection.insertOne(newRoutine);
     
-    return res.status(201).json({
-      message: "Routine saved successfully",
-      routineId: result.insertedId,
+    return res.status(201).send({
+      message: "Routine created successfully.",
+      data: { id: result.insertedId },
     });
   } catch (error) {
-    console.error("Detailed error saving routine:", error);
-    
-    // More detailed error response
-    return res.status(500).json({ 
-      message: "Error saving routine", 
-      error: error.toString(),
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
+    console.error("Error creating routine:", error.message);
+    res.status(500).send({ error: "Internal server error." });
   }
 });
 
@@ -554,9 +547,10 @@ app.get("/routine/:batchId", async (req, res) => {
     const routine = await routineCollection.findOne({ batchId: new ObjectId(batchId) });
 
     if (!routine) {
+
       return res.status(404).json({ message: "No routine found for this batch" });
     }
-
+    console.log(routine);
     res.status(200).json(routine);
   } catch (error) {
     console.error("Error fetching routine:", error);
