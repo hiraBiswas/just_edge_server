@@ -4,13 +4,14 @@ const cors = require("cors");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
 const port = process.env.PORT || 5000;
+const bcrypt = require("bcryptjs");
 // middleware
 app.use(cors());
 app.use(express.json());
 
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-const uri = "mongodb+srv://just_edge:gFMaSV8z7Wg3TwGS@cluster0.eogwfq1.mongodb.net/?retryWrites=true&w=majority";
+const uri = "mongodb+srv://hira190112:190112@cluster0.eogwfq1.mongodb.net/?retryWrites=true&w=majority";
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(uri, {
@@ -48,7 +49,7 @@ async function run() {
       try {
         const user = req.body;
         const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, {
-          expiresIn: "1h",
+          expiresIn: "5min",
         });
         res.send({ token });
       } catch (error) {
@@ -103,38 +104,61 @@ async function run() {
 
     app.post("/users", async (req, res) => {
       const user = req.body;
+    
+      // Check if the user already exists
       const query = { email: user.email };
       const existingUser = await userCollection.findOne(query);
       if (existingUser) {
         return res.send({ message: "User already exists", insertedId: null });
       }
-      const result = await userCollection.insertOne(user);
-      res.send(result);
-    });
-
-    // Students API
-    app.post("/students", async (req, res) => {
-      const { userId, prefCourse, studentID, department, session, institution } = req.body;
-      const studentData = {
-        userId: new ObjectId(userId),          // Convert userId to ObjectId
-        prefCourse: new ObjectId(prefCourse),  // Convert prefCourse to ObjectId
-        studentID,
-        department,
-        session,
-        institution,
-        isDeleted: false,                      // Explicitly add isDeleted field
-        batch_id: null                         // Add batch_id with a null value
-      };
     
       try {
-        const result = await studentCollection.insertOne(studentData);
+        // Hash the password before saving it
+        const hashedPassword = await bcrypt.hash(user.password, 10); // 10 is the salt rounds
+    
+        // Store the user object with the hashed password
+        const userWithHashedPassword = { 
+          ...user,
+          password: hashedPassword 
+        };
+    
+        const result = await userCollection.insertOne(userWithHashedPassword);
+    
         res.send(result);
       } catch (error) {
-        console.error("Error creating student:", error);
-        res.status(500).send({ message: "Internal server error" });
+        console.error("Error hashing password:", error);
+        res.status(500).send({ message: "Server error" });
       }
     });
-    
+
+
+ 
+    // students API
+app.post("/students", async (req, res) => {
+  const { userId, prefCourse, studentID, department, session, institution } = req.body;
+
+  console.log("Received data:", req.body);  // Log the incoming data
+
+  const studentData = {
+    userId: new ObjectId(userId),          // Convert userId to ObjectId
+    prefCourse: new ObjectId(prefCourse),  // Convert prefCourse to ObjectId
+    studentID,
+    department,
+    session,
+    institution,
+    isDeleted: false,                      // Explicitly add isDeleted field
+    enrolled_batch: null                         // Add batch_id with a null value
+  };
+
+  try {
+    const result = await studentsCollection.insertOne(studentData);
+    res.send(result);
+  } catch (error) {
+    console.error("Error creating student:", error);
+    res.status(500).send({ message: "Internal server error" });
+  }
+});
+
 
     // Get all students API
     app.get("/students", async (req, res) => {
@@ -146,7 +170,6 @@ async function run() {
         res.status(500).send({ message: "Internal server error" });
       }
     });
-
 
 
 // PATCH /students/:id
@@ -189,6 +212,43 @@ app.patch("/students/:id", async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 });
+
+
+// Login API to authenticate the user and generate a JWT token
+app.post("/login", async (req, res) => {
+  const { email, password } = req.body;
+
+  try {
+    // Find user by email
+    const user = await userCollection.findOne({ email });
+    
+    // If no user found, return an error
+    if (!user) {
+      return res.status(400).send({ message: "User not found" });
+    }
+
+    // Compare the provided password with the stored hashed password
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+    
+    if (!isPasswordValid) {
+      return res.status(401).send({ message: "Invalid credentials" });
+    }
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { email: user.email, userId: user._id, type: user.type },
+      process.env.ACCESS_TOKEN_SECRET,
+      { expiresIn: "1h" } // Token expiration time (can be adjusted)
+    );
+
+    // Send the token back to the client
+    res.send({ token, user });
+  } catch (error) {
+    console.error("Error during login:", error);
+    res.status(500).send({ message: "Internal server error" });
+  }
+});
+
 
 
     app.patch("/courses/:courseId", async (req, res) => {
@@ -286,9 +346,9 @@ app.patch("/students/:id", async (req, res) => {
 
     app.get('/batches/:id', async (req, res) => {
       const { id } = req.params; // Get the batch ID from the URL parameters
-    
+      
       // Ensure the provided ID is a valid MongoDB ObjectId
-      if (!isValidObjectId(id)) {
+      if (!ObjectId.isValid(id)) {
         return res.status(400).json({ message: 'Invalid batch ID format' });
       }
     
@@ -300,14 +360,14 @@ app.patch("/students/:id", async (req, res) => {
           return res.status(404).json({ message: 'Batch not found' });
         }
     
-        // Return the batch data as a JSON response
-        res.json(batch);
+        // Send the batch data back as the response
+        return res.json(batch);
+    
       } catch (error) {
         console.error("Error fetching batch details:", error);
         res.status(500).json({ message: 'Error fetching batch details' });
       }
     });
-    
     
 
     // Get all batches API
