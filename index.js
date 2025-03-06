@@ -2,6 +2,8 @@ const express = require("express");
 const app = express();
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
+const multer = require("multer");
+const upload = multer({ storage: multer.memoryStorage() });
 require("dotenv").config();
 const port = process.env.PORT || 5000;
 const bcrypt = require("bcryptjs");
@@ -38,6 +40,8 @@ async function run() {
       .collection("instructors-batches");
     const routineCollection = client.db("just_edge").collection("routine");
     const onlineProfileCollection = client.db("just_edge").collection("online-profile");
+    const classesCollection = client.db("just_edge").collection("classes");
+    const resultCollection = client.db("just_edge").collection("result");
 
     // JWT-related API
     app.post("/jwt", async (req, res) => {
@@ -663,9 +667,11 @@ app.patch("/students/:id", async (req, res) => {
       }
     });
 
+
     app.get("/batches", async (req, res) => {
       try {
-        // Step 1: Fetch batches and instructorIds (simplified version)
+    
+        // Fetch batches and instructor IDs
         const batches = await batchesCollection
           .aggregate([
             { $match: { isDeleted: false } },
@@ -702,25 +708,52 @@ app.patch("/students/:id", async (req, res) => {
             },
           ])
           .toArray();
-
-        // Step 2: Fetch user details for the instructors
+    
+        // instructors from the instructors collection
         const instructorIds = batches.flatMap((batch) => batch.instructorIds);
-        const users = await userCollection
+    
+        const instructors = await instructorsCollection
           .find({ _id: { $in: instructorIds } })
           .toArray();
-
-        // Step 3: Attach the user names (instructors) to the batches
+    
+        // Extract userIds from instructors
+        const userIds = instructors.map((instructor) => instructor.userId);
+    
+        //  Fetch user details from the userCollection
+        const users = await userCollection
+          .find({ _id: { $in: userIds } })
+          .toArray();
+    
+        // Map batches with instructor names
         batches.forEach((batch) => {
-          // For each batch, map its instructorIds to instructor names
-          batch.instructors = batch.instructorIds.map((id) => {
-            const user = users.find(
-              (user) => user._id.toString() === id.toString()
+    
+          batch.instructors = batch.instructorIds.map((instructorId) => {
+    
+            // Find the corresponding instructor
+            const instructor = instructors.find((inst) =>
+              inst._id.equals(instructorId)
             );
-            return user ? user.name : "Unassigned"; // Return instructor name or "Unassigned" if not found
+    
+            if (instructor) {
+   
+              // Find the corresponding user
+              const user = users.find((user) =>
+                user._id.equals(instructor.userId)
+              );
+    
+              if (user) {
+                return user.name; 
+              } else {
+                console.log(`No User found for Instructor ID: ${instructorId}`);
+              }
+            } else {
+              console.log(`No Instructor found for ID: ${instructorId}`);
+            }
+    
+            return "Unassigned"; 
           });
         });
-
-        // Return the batches with complete details
+    
         res.send(batches);
       } catch (error) {
         console.error("Error fetching batches:", error);
@@ -729,8 +762,10 @@ app.patch("/students/:id", async (req, res) => {
           .send({ message: "Internal server error", error: error.message });
       }
     });
-
-    // PATCH /batches/:id
+    
+    
+    
+   
     app.patch("/batches/:id", async (req, res) => {
       const { id } = req.params;
 
@@ -843,55 +878,6 @@ app.patch("/students/:id", async (req, res) => {
       }
     });
 
-    app.get("/batches/:id", async (req, res) => {
-      const { id } = req.params;
-
-      // Validate MongoDB ObjectId
-      if (!ObjectId.isValid(id)) {
-        return res.status(400).json({ message: "Invalid batch ID format" });
-      }
-
-      try {
-        // Fetch the batch by ID
-        const batch = await batchesCollection.findOne({
-          _id: new ObjectId(id),
-        });
-
-        if (!batch) {
-          return res.status(404).json({ message: "Batch not found" });
-        }
-
-        // Fetch instructor IDs for this batch
-        const batchInstructors = await instructorsBatchesCollection
-          .find({ batchId: new ObjectId(id) })
-          .toArray();
-
-        const instructorIds = batchInstructors.map(
-          (instructor) => instructor.instructorId
-        );
-
-        // Fetch user details for the instructors
-        const instructors = await userCollection
-          .find({ _id: { $in: instructorIds } })
-          .toArray();
-
-        // Attach instructor names to the batch
-        batch.instructors = instructors.map(
-          (user) => user.name || "Unassigned"
-        );
-
-        // Include instructor IDs as well if needed
-        batch.instructorIds = instructorIds;
-
-        // Return the batch with instructor details
-        return res.json(batch);
-      } catch (error) {
-        console.error("Error fetching batch details:", error);
-        return res
-          .status(500)
-          .json({ message: "Error fetching batch details" });
-      }
-    });
 
     app.get("/instructors/:id", async (req, res) => {
       const { id } = req.params;
@@ -1158,6 +1144,8 @@ app.patch("/students/:id", async (req, res) => {
           });
       }
     });
+
+
     app.get("/instructors/:instructorId/classes", async (req, res) => {
       const { instructorId } = req.params;
 
@@ -1233,6 +1221,265 @@ app.patch("/students/:id", async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
       }
     });
+
+    app.post("/classes", async (req, res) => {
+      const { batchId, instructorId, date } = req.body;
+    
+      if (!batchId || !instructorId || !date) {
+        return res.status(400).json({ success: false, message: "Batch ID, Instructor ID, and Date are required" });
+      }
+    
+      try {
+        const newClass = {
+          batchId: new ObjectId(batchId), // Convert batchId to ObjectId
+          instructorId: new ObjectId(instructorId), // Convert instructorId to ObjectId
+          date, // Save the date as-is
+        };
+    
+        const result = await classesCollection.insertOne(newClass);
+    
+        if (result.acknowledged) {
+          res.status(201).json({ success: true, message: "Class added successfully", classId: result.insertedId });
+        } else {
+          res.status(500).json({ success: false, message: "Failed to add class" });
+        }
+      } catch (error) {
+        console.error("Error saving class:", error);
+        res.status(500).json({ success: false, message: "Internal server error" });
+      }
+    });
+
+    // app.get("/classes", async (req, res) => {
+    //   try {
+    //     const result = await classesCollection.find().toArray();
+    //     res.send(result);
+    //   } catch (error) {
+    //     console.error("Error fetching classes:", error);
+    //     res.status(500).send({ message: "Internal server error" });
+    //   }
+    // });
+    
+
+    app.get("/classes", async (req, res) => {
+      try {
+        const classes = await classesCollection.find().toArray();
+        
+        // For each class, find the instructor's name by using the userId in the instructor document
+        const classesWithInstructors = await Promise.all(
+          classes.map(async (classItem) => {
+            // Find the instructor data using the instructorId
+            const instructor = await instructorsCollection.findOne({ _id: classItem.instructorId });
+            
+            if (instructor) {
+              // Get the userId from the instructor data
+              const user = await userCollection.findOne({ _id: instructor.userId });
+              
+              // Add instructor name to the class item
+              return {
+                ...classItem,
+                instructorName: user ? user.name : 'Unknown',
+              };
+            } else {
+              return {
+                ...classItem,
+                instructorName: 'Unknown',
+              };
+            }
+          })
+        );
+    
+        res.send(classesWithInstructors);
+      } catch (error) {
+        console.error("Error fetching classes:", error);
+        res.status(500).send({ message: "Internal server error" });
+      }
+    });
+
+  
+  // PATCH route to update class by classId
+// app.patch("/classes/:classId", async (req, res) => {
+//   const { classId } = req.params;
+//   const { startTime, endTime } = req.body;
+
+//   try {
+//     // Ensure that startTime and endTime are passed in the request
+//     if (!startTime || !endTime) {
+//       return res.status(400).json({ message: "Both startTime and endTime are required." });
+//     }
+
+//     // Update the class document with startTime and endTime
+//     const updatedClass = await classesCollection.findOneAndUpdate(
+//       { _id: new ObjectId(classId) }, // Find the class by classId
+//       {
+//         $set: {
+//           startTime: startTime,
+//           endTime: endTime
+//         }
+//       },
+//       { new: true } // Return the updated document
+//     );
+
+//     if (!updatedClass) {
+//       return res.status(404).json({ message: "Class not found." });
+//     }
+
+//     res.status(200).json({ message: "Class updated successfully.", updatedClass });
+//   } catch (error) {
+//     console.error("Error updating class:", error);
+//     res.status(500).json({ message: "Server error." });
+//   }
+// });
+
+
+app.patch("/classes/:classId", async (req, res) => {
+  const { classId } = req.params;
+  const { startTime, endTime } = req.body;
+  console.log("Received classId:", classId);
+
+  try {
+    // Ensure at least one of startTime or endTime is provided
+    if (!startTime && !endTime) {
+      return res.status(400).json({ message: "At least one of startTime or endTime is required." });
+    }
+
+    // Build the update object dynamically
+    const updateFields = {};
+    if (startTime) updateFields.startTime = startTime;
+    if (endTime) updateFields.endTime = endTime;
+
+    if (!ObjectId.isValid(classId)) {
+      return res.status(400).json({ message: "Invalid classId format." });
+    }
+    const classExists = await classesCollection.findOne({ _id: new ObjectId(classId) });
+console.log(classExists);
+
+    // Update the class document with provided fields
+    const updatedClass = await classesCollection.findOneAndUpdate(
+      { _id: new ObjectId(classId) }, // Find the class by classId
+      { $set: updateFields },        // Dynamically set fields
+      { returnDocument: "after" }    // Return the updated document
+    );
+
+    console.log("Update result:", updatedClass);
+
+    if (!updatedClass.value) {
+      return res.status(404).json({ message: "Class not found." });
+    }
+
+    res.status(200).json({ message: "Class updated successfully.", updatedClass: updatedClass.value });
+  } catch (error) {
+    console.error("Error updating class:", error);
+    res.status(500).json({ message: "Server error." });
+  }
+});
+
+
+
+// app.post("/results/upload", async (req, res) => {
+//     try {
+//         console.log("Received request body:", req.body);
+
+//         const { batchId, results } = req.body;
+
+//         if (!batchId) {
+//             return res.status(400).send({ message: "Batch ID is missing" });
+//         }
+
+//         if (!ObjectId.isValid(batchId)) {
+//             return res.status(400).send({ message: "Invalid batch ID" });
+//         }
+
+//         const batch = await batchesCollection.findOne({ _id: new ObjectId(batchId) });
+//         if (!batch) {
+//             return res.status(404).send({ message: "Batch not found" });
+//         }
+
+//         // Format data for MongoDB
+//         const formattedResults = results.map((result) => ({
+//             batchId: new ObjectId(batchId),
+//             studentID: result.studentID,
+//             examType: result.examType,
+//             marks: result.marks,
+//         }));
+
+//         // Save data in MongoDB
+//         const response = await resultCollection.insertMany(formattedResults);
+//         console.log("Inserted Results:", response);
+
+//         res.send({ message: "Results uploaded successfully!", insertedCount: response.insertedCount });
+//     } catch (error) {
+//         console.error("Error processing results:", error);
+//         res.status(500).send({ message: "Internal server error", error: error.message });
+//     }
+// });
+
+app.post("/results/upload", async (req, res) => {
+  try {
+    console.log("Received request body:", req.body);
+
+    const { batchId, results } = req.body;
+
+    if (!batchId) {
+      return res.status(400).send({ message: "Batch ID is missing" });
+    }
+
+    if (!ObjectId.isValid(batchId)) {
+      return res.status(400).send({ message: "Invalid batch ID" });
+    }
+
+    const batch = await batchesCollection.findOne({ _id: new ObjectId(batchId) });
+    if (!batch) {
+      return res.status(404).send({ message: "Batch not found" });
+    }
+
+    for (const result of results) {
+      const existingStudent = await resultCollection.findOne({
+        batchId: new ObjectId(batchId),
+        studentID: result.studentID
+      });
+
+      if (existingStudent) {
+        const existingExam = existingStudent.exams.find(exam => exam.examType === result.examType);
+
+        if (existingExam) {
+          return res.status(400).send({ message: `Exam type ${result.examType} already exists for student ${result.studentID}` });
+        }
+
+        await resultCollection.updateOne(
+          { batchId: new ObjectId(batchId), studentID: result.studentID },
+          { $push: { exams: { examType: result.examType, marks: result.marks } } }
+        );
+      } else {
+        await resultCollection.insertOne({
+          batchId: new ObjectId(batchId),
+          studentID: result.studentID,
+          exams: [{ examType: result.examType, marks: result.marks }]
+        });
+      }
+    }
+
+    res.send({ message: "Results uploaded successfully!" });
+  } catch (error) {
+    console.error("Error processing results:", error);
+    res.status(500).send({ message: "Internal server error", error: error.message });
+  }
+});
+
+
+// Get all results
+app.get("/results", async (req, res) => {
+  try {
+    const results = await resultCollection.find({}).toArray();
+    console.log("Fetched Results:", results);
+    res.send(results);
+  } catch (error) {
+    console.error("Error fetching results:", error);
+    res.status(500).send({ message: "Internal server error", error: error.message });
+  }
+});
+
+    
+    
 
     await client.db("admin").command({ ping: 1 });
     console.log(
