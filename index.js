@@ -1478,6 +1478,49 @@ app.get("/results", async (req, res) => {
   }
 });
 
+app.get('/batch/:batchId/students', async (req, res) => {
+  const { batchId } = req.params;
+
+  try {
+      console.log('Fetching students for batch:', batchId);
+
+      // Fetch students enrolled in the batch with ObjectId
+      const students = await studentsCollection.find({ enrolled_batch: new ObjectId(batchId), isDeleted: false }).toArray();
+      
+      console.log('Students found:', students);
+
+      // Fetch user details for each student and map the results
+      const studentData = await Promise.all(students.map(async (student) => {
+          console.log('Processing student:', student);
+
+          // Log the student.userId to verify its value
+          console.log('Student userId:', student.userId);
+
+          const user = await userCollection.findOne({ 
+              _id: new ObjectId(student.userId), 
+              type: 'student', 
+              
+          });
+
+          // Log the user data to see if it's fetched correctly
+          console.log('User data for student:', user);
+
+          return {
+              studentID: student.studentID,
+              name: user ? user.name : 'Unknown'
+          };
+      }));
+
+      console.log('Student data:', studentData);
+      
+      res.status(200).json(studentData);
+  } catch (error) {
+      console.error('Error fetching students:', error);
+      res.status(500).json({ message: 'Server error' });
+  }
+});
+
+
     
     
 
