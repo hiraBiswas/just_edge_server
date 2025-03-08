@@ -1413,6 +1413,63 @@ console.log(classExists);
 //     }
 // });
 
+// app.post("/results/upload", async (req, res) => {
+//   try {
+//     console.log("Received request body:", req.body);
+
+//     const { batchId, results } = req.body;
+
+//     if (!batchId) {
+//       return res.status(400).send({ message: "Batch ID is missing" });
+//     }
+
+//     if (!ObjectId.isValid(batchId)) {
+//       return res.status(400).send({ message: "Invalid batch ID" });
+//     }
+
+//     const batch = await batchesCollection.findOne({ _id: new ObjectId(batchId) });
+//     if (!batch) {
+//       return res.status(404).send({ message: "Batch not found" });
+//     }
+
+//     for (const result of results) {
+//       const existingStudent = await resultCollection.findOne({
+//         batchId: new ObjectId(batchId),
+//         studentID: result.studentID
+//       });
+
+//       if (existingStudent) {
+//         const existingExam = existingStudent.exams.find(exam => exam.examType === result.examType);
+
+//         if (existingExam) {
+//           return res.status(400).send({ message: `Exam type ${result.examType} already exists for student ${result.studentID}` });
+//         }
+
+//         await resultCollection.updateOne(
+//           { batchId: new ObjectId(batchId), studentID: result.studentID },
+//           { $push: { exams: { examType: result.examType, marks: result.marks } } }
+//         );
+//       } else {
+//         await resultCollection.insertOne({
+//           batchId: new ObjectId(batchId),
+//           studentID: result.studentID,
+//           exams: [{ examType: result.examType, marks: result.marks }]
+//         });
+//       }
+//     }
+
+//     res.send({ message: "Results uploaded successfully!" });
+//   } catch (error) {
+//     console.error("Error processing results:", error);
+//     res.status(500).send({ message: "Internal server error", error: error.message });
+//   }
+// });
+
+
+// Get all results
+
+
+
 app.post("/results/upload", async (req, res) => {
   try {
     console.log("Received request body:", req.body);
@@ -1433,27 +1490,44 @@ app.post("/results/upload", async (req, res) => {
     }
 
     for (const result of results) {
+      let studentID = result.studentID;
+
+      // Convert studentID to a number if it's purely numeric
+      if (!isNaN(studentID)) {
+        studentID = Number(studentID);
+      }
+
+      // Check if the student already exists in this batch
       const existingStudent = await resultCollection.findOne({
         batchId: new ObjectId(batchId),
-        studentID: result.studentID
+        studentID: studentID, // Ensure studentID is queried in the correct format
       });
 
       if (existingStudent) {
-        const existingExam = existingStudent.exams.find(exam => exam.examType === result.examType);
+        // Check if the exam type already exists for this student
+        const existingExam = existingStudent.exams.find(
+          (exam) => exam.examType === result.examType
+        );
 
         if (existingExam) {
-          return res.status(400).send({ message: `Exam type ${result.examType} already exists for student ${result.studentID}` });
+          return res.status(400).send({
+            message: `Exam type "${result.examType}" already exists for student ${result.studentID}`,
+          });
         }
 
+        // Add new exam type to the existing student entry
         await resultCollection.updateOne(
-          { batchId: new ObjectId(batchId), studentID: result.studentID },
-          { $push: { exams: { examType: result.examType, marks: result.marks } } }
+          { batchId: new ObjectId(batchId), studentID: studentID },
+          {
+            $push: { exams: { examType: result.examType, marks: result.marks } },
+          }
         );
       } else {
+        // If the student does not exist, create a new document
         await resultCollection.insertOne({
           batchId: new ObjectId(batchId),
-          studentID: result.studentID,
-          exams: [{ examType: result.examType, marks: result.marks }]
+          studentID: studentID,
+          exams: [{ examType: result.examType, marks: result.marks }],
         });
       }
     }
@@ -1466,7 +1540,9 @@ app.post("/results/upload", async (req, res) => {
 });
 
 
-// Get all results
+
+
+
 app.get("/results", async (req, res) => {
   try {
     const results = await resultCollection.find({}).toArray();
@@ -1477,6 +1553,45 @@ app.get("/results", async (req, res) => {
     res.status(500).send({ message: "Internal server error", error: error.message });
   }
 });
+
+app.patch("/results/update", async (req, res) => {
+  try {
+      const { studentID, batchId, exams } = req.body;
+
+      if (!studentID || !batchId || !exams) {
+          return res.status(400).json({ message: "Missing required fields" });
+      }
+
+      const existingStudent = await resultCollection.findOne({
+          batchId: new ObjectId(batchId),
+          studentID: studentID
+      });
+
+      if (!existingStudent) {
+          return res.status(404).json({ message: "Student not found in this batch" });
+      }
+
+      for (const exam of exams) {
+          await resultCollection.updateOne(
+              {
+                  batchId: new ObjectId(batchId),
+                  studentID: studentID,
+                  "exams.examType": exam.examType
+              },
+              {
+                  $set: { "exams.$.marks": exam.marks }
+              }
+          );
+      }
+
+      res.status(200).json({ message: "Exam results updated successfully" });
+  } catch (error) {
+      console.error("Error updating results:", error);
+      res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+
 
 app.get('/batch/:batchId/students', async (req, res) => {
   const { batchId } = req.params;
