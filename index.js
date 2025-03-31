@@ -45,6 +45,7 @@ async function run() {
     const classesCollection = client.db("just_edge").collection("classes");
     const resultCollection = client.db("just_edge").collection("result");
     const noticeCollection = client.db("just_edge").collection("notice");
+    const batchChangeRequestCollection = client.db("just_edge").collection("batch_change_request");
 
     // JWT-related API
     app.post("/jwt", async (req, res) => {
@@ -618,27 +619,21 @@ async function run() {
           });
         }
 
-        // Create new batch object with all fields
         const newBatch = {
           course_id: new ObjectId(batchData.course_id),
-          batchNumber: batchData.batchNumber.toString(), // Ensure string
-          batchName:
-            batchData.batchName ||
-            `${batchData.courseName} - ${batchData.batchNumber}`,
+          batchNumber: batchData.batchNumber, 
+          batchName: batchData.batchName || `${batchData.courseName} - ${batchData.batchNumber}`,
           startDate: batchData.startDate ? new Date(batchData.startDate) : null,
           endDate: batchData.endDate ? new Date(batchData.endDate) : null,
           seat: parseInt(batchData.seat) || 0,
           status: batchData.status || "Upcoming",
-          isDeleted:
-            batchData.isDeleted !== undefined ? batchData.isDeleted : false,
+          isDeleted: batchData.isDeleted !== undefined ? batchData.isDeleted : false,
           occupiedSeat: parseInt(batchData.occupiedSeat) || 0,
-          createdAt: batchData.createdAt
-            ? new Date(batchData.createdAt)
-            : new Date(),
+          createdAt: new Date(),
           instructorIds: [],
           instructors: [],
         };
-
+        
         console.log("Final batch object to insert:", newBatch);
 
         // Insert into database
@@ -665,63 +660,46 @@ async function run() {
       }
     });
 
-    // Route to get the next batch number
-    app.get("/batches/next-batch-number", async (req, res) => {
+ 
+
+    app.get("/next-batch-number/:courseId", async (req, res) => {
       try {
-        console.log("Fetching next batch number");
-
-        // Find all batches and sort by creation date (newest first)
-        const allBatches = await batchesCollection
-          .find()
-          .sort({ _id: -1 })
-          .toArray();
-        console.log(`Found ${allBatches.length} batches`);
-
-        let highestNumber = 0;
-
-        // Scan through all batches to find highest batch number
-        for (const batch of allBatches) {
-          // If the batch has a batchNumber field directly, use that
-          if (batch.batchNumber) {
-            const batchNumber = parseInt(batch.batchNumber, 10);
-            if (!isNaN(batchNumber) && batchNumber > highestNumber) {
-              highestNumber = batchNumber;
-              console.log(
-                `Found higher batch number (from batchNumber): ${highestNumber}`
-              );
-            }
-            continue;
-          }
-
-          // If no batchNumber field but has batchName, extract from there
-          if (batch.batchName) {
-            // Try to extract the number part after the " - " separator
-            const parts = batch.batchName.split(" - ");
-            if (parts.length > 1 && parts[1]) {
-              // Extract numeric part from the batch name
-              const batchNumberStr = parts[1].trim();
-              const batchNumber = parseInt(batchNumberStr, 10);
-
-              if (!isNaN(batchNumber) && batchNumber > highestNumber) {
-                highestNumber = batchNumber;
-                console.log(
-                  `Found higher batch number (from batchName): ${highestNumber}`
-                );
-              }
-            }
-          }
+        const courseId = req.params.courseId;
+             
+        if (!courseId) {
+          return res.status(400).json({ error: "Course ID is required" });
         }
-
-        // Generate next batch number padded to 3 digits
-        const nextBatchNumber = (highestNumber + 1).toString().padStart(3, "0");
+        
+        // Convert string courseId to ObjectId for proper MongoDB comparison
+        const objectIdCourseId = new ObjectId(courseId);
+          
+        // Get all batches for this course with the corrected query
+        const batches = await batchesCollection
+          .find({ course_id: objectIdCourseId })
+          .toArray();
+          
+        // Rest of your code remains the same
+        const batchNumbers = batches.map(batch => parseInt(batch.batchNumber, 10));
+        const maxBatchNumber = batchNumbers.length > 0 
+          ? Math.max(...batchNumbers)
+          : 0;
+        const nextBatchNumber = (maxBatchNumber + 1)
+          .toString()
+          .padStart(3, '0');
+          
+        console.log(`Current max batch number: ${maxBatchNumber}`);
         console.log(`Generated next batch number: ${nextBatchNumber}`);
-
+          
         res.json({ nextBatchNumber });
       } catch (error) {
-        console.error("Error generating next batch number:", error);
-        res.status(500).json({ error: "Failed to generate batch number" });
+        console.error("Error generating batch number:", error);
+        res.status(500).json({
+          error: "Failed to generate batch number",
+          details: error.message
+        });
       }
     });
+    
 
     app.get("/batches/:id", async (req, res) => {
       const { id } = req.params;
@@ -802,6 +780,7 @@ async function run() {
               $project: {
                 _id: 1,
                 batchName: 1,
+                batchNumber:1,
                 course_id: 1,
                 status: 1,
                 startDate: 1,
@@ -1967,6 +1946,55 @@ async function run() {
         });
       }
     });
+
+
+    app.post("/batch-change-requests", async (req, res) => {
+      try {
+        const { studentId, requestedBatch } = req.body;
+        if (!studentId || !requestedBatch) {
+          return res.status(400).json({ message: "Missing required fields" });
+        }
+    
+        // Create batch change request
+        const batchRequest = {
+          studentId: new ObjectId(studentId),
+          requestedBatch: new ObjectId(requestedBatch),
+          status: "Pending",
+          timestamp: new Date(),
+        };
+    
+        await batchChangeRequestCollection.insertOne(batchRequest);
+        res.status(201).json({ message: "Batch change request submitted successfully" });
+      } catch (error) {
+        console.error("Error handling batch change request:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+    app.get("/batch-change-requests", async (req, res) => {
+      try {
+        // Optionally, you can filter based on status or studentId
+        const { status, studentId } = req.query;
+        let filter = {};
+    
+        // Apply filters if specified
+        if (status) {
+          filter.status = status;
+        }
+        if (studentId) {
+          filter.studentId = new ObjectId(studentId);
+        }
+    
+        // Fetch batch change requests from the database
+        const batchChangeRequests = await batchChangeRequestCollection.find(filter).toArray();
+        
+        res.status(200).json(batchChangeRequests);
+      } catch (error) {
+        console.error("Error fetching batch change requests:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+    
 
     await client.db("admin").command({ ping: 1 });
     console.log(
