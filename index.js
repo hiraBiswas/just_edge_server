@@ -127,37 +127,7 @@ async function run() {
       }
     });
 
-    // app.post("/users", async (req, res) => {
-    //   const user = req.body;
-
-    //   // Check if the user already exists
-    //   const query = { email: user.email };
-    //   const existingUser = await userCollection.findOne(query);
-    //   if (existingUser) {
-    //     return res.send({ message: "User already exists", insertedId: null });
-    //   }
-
-    //   try {
-    //     // Hash the password before saving it
-    //     const hashedPassword = await bcrypt.hash(user.password, 10); // 10 is the salt rounds
-
-    //     // Store the user object with the hashed password
-    //     const userWithHashedPassword = {
-    //       ...user,
-    //       password: hashedPassword
-    //     };
-
-    //     const result = await userCollection.insertOne(userWithHashedPassword);
-
-    //     res.send(result);
-    //   } catch (error) {
-    //     console.error("Error hashing password:", error);
-    //     res.status(500).send({ message: "Server error" });
-    //   }
-    // });
-
-    // students API
-
+   
     app.post("/users", async (req, res) => {
       const user = req.body;
 
@@ -1994,6 +1964,302 @@ async function run() {
         res.status(500).json({ message: "Internal server error" });
       }
     });
+
+
+    
+app.patch("/batch-change-requests/:requestId/approve", async (req, res) => {
+  const { requestId } = req.params;
+
+  if (!isValidObjectId(requestId)) {
+    return res.status(400).json({ error: "Invalid request ID format" });
+  }
+
+  try {
+    // Start a transaction
+    const session = client.startSession();
+    await session.withTransaction(async () => {
+      // 1. Get the request details
+      const request = await batchChangeRequestCollection.findOne(
+        { _id: new ObjectId(requestId), status: "Pending" },
+        { session }
+      );
+
+      if (!request) {
+        throw new Error("Request not found or already processed");
+      }
+
+      // 2. Update the student's enrolled_batch
+      const studentUpdate = await studentsCollection.updateOne(
+        { _id: new ObjectId(request.studentId) },
+        { $set: { enrolled_batch: new ObjectId(request.requestedBatch) } },
+        { session }
+      );
+
+      if (studentUpdate.modifiedCount !== 1) {
+        throw new Error("Failed to update student's batch");
+      }
+
+      // 3. Update the batch's occupiedSeat count
+      const batchUpdate = await batchesCollection.updateOne(
+        { _id: new ObjectId(request.requestedBatch) },
+        { $inc: { occupiedSeat: 1 } },
+        { session }
+      );
+
+      if (batchUpdate.modifiedCount !== 1) {
+        throw new Error("Failed to update batch seat count");
+      }
+
+      // 4. Mark the request as approved
+      const requestUpdate = await batchChangeRequestCollection.updateOne(
+        { _id: new ObjectId(requestId) },
+        { $set: { status: "approved", processedAt: new Date() } },
+        { session }
+      );
+
+      if (requestUpdate.modifiedCount !== 1) {
+        throw new Error("Failed to update request status");
+      }
+    });
+
+    res.status(200).json({ message: "Request approved successfully" });
+  } catch (error) {
+    console.error("Error approving request:", error);
+    res.status(500).json({ 
+      message: "Failed to approve request",
+      error: error.message 
+    });
+  }
+});
+
+app.patch("/batch-change-requests/:requestId/reject", async (req, res) => {
+  const { requestId } = req.params;
+
+  if (!isValidObjectId(requestId)) {
+    return res.status(400).json({ error: "Invalid request ID format" });
+  }
+
+  try {
+    // Update only if the request is still pending
+    const result = await batchChangeRequestCollection.updateOne(
+      { 
+        _id: new ObjectId(requestId),
+        status: "Pending" // Only reject if still pending
+      },
+      { 
+        $set: { 
+          status: "rejected",
+          rejectedAt: new Date(),
+          rejectionReason: req.body.reason || null // Optional rejection reason
+        } 
+      }
+    );
+
+    if (result.modifiedCount === 0) {
+      return res.status(404).json({ 
+        message: "Request not found or already processed" 
+      });
+    }
+
+    res.status(200).json({ message: "Request rejected successfully" });
+  } catch (error) {
+    console.error("Error rejecting request:", error);
+    res.status(500).json({ 
+      message: "Failed to reject request",
+      error: error.message 
+    });
+  }
+});
+
+
+// Add this to your server.js
+app.get('/batch-change-requests/swap-candidates/:requestId', async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    
+    if (!isValidObjectId(requestId)) {
+      return res.status(400).json({ error: "Invalid request ID format" });
+    }
+
+    // Get the current request
+    const currentRequest = await batchChangeRequestCollection.findOne({
+      _id: new ObjectId(requestId),
+      status: "Pending"
+    });
+
+    if (!currentRequest) {
+      return res.status(404).json({ message: "Request not found or already processed" });
+    }
+
+    // Get the requested batch details
+    const requestedBatch = await batchesCollection.findOne({
+      _id: new ObjectId(currentRequest.requestedBatch)
+    });
+
+    if (!requestedBatch) {
+      return res.status(404).json({ message: "Requested batch not found" });
+    }
+
+    // Find potential swap candidates (students wanting to move from the requested batch to current batch)
+    const swapCandidates = await batchChangeRequestCollection.aggregate([
+      {
+        $match: {
+          status: "Pending",
+          requestedBatch: currentRequest.currentBatch, // They want to move to current student's batch
+          studentId: { $ne: currentRequest.studentId } // Exclude current student
+        }
+      },
+      {
+        $lookup: {
+          from: "students",
+          localField: "studentId",
+          foreignField: "_id",
+          as: "student"
+        }
+      },
+      { $unwind: "$student" },
+      {
+        $match: {
+          "student.enrolled_batch": requestedBatch._id // They're currently in the batch we want
+        }
+      },
+      {
+        $lookup: {
+          from: "users",
+          localField: "student.userId",
+          foreignField: "_id",
+          as: "user"
+        }
+      },
+      { $unwind: "$user" },
+      {
+        $project: {
+          _id: 1,
+          studentName: "$user.name",
+          studentId: "$student._id",
+          currentBatch: "$student.enrolled_batch",
+          requestedBatch: 1,
+          timestamp: 1
+        }
+      }
+    ]).toArray();
+
+    res.status(200).json(swapCandidates);
+  } catch (error) {
+    console.error("Error finding swap candidates:", error);
+    res.status(500).json({ message: "Error finding swap candidates" });
+  }
+});
+
+
+app.patch('/batch-change-requests/swap', async (req, res) => {
+  const { requestId1, requestId2 } = req.body;
+  const session = client.startSession();
+
+  try {
+    await session.withTransaction(async () => {
+      // Get both requests with all necessary data
+      const [request1, request2] = await Promise.all([
+        batchChangeRequestCollection.findOne(
+          { _id: new ObjectId(requestId1) },
+          { session }
+        ).then(async req => {
+          if (!req) return null;
+          const student = await studentsCollection.findOne(
+            { _id: new ObjectId(req.studentId) },
+            { session }
+          );
+          return { ...req, student };
+        }),
+        batchChangeRequestCollection.findOne(
+          { _id: new ObjectId(requestId2) },
+          { session }
+        ).then(async req => {
+          if (!req) return null;
+          const student = await studentsCollection.findOne(
+            { _id: new ObjectId(req.studentId) },
+            { session }
+          );
+          return { ...req, student };
+        })
+      ]);
+
+      if (!request1 || !request2) {
+        throw new Error("One or both requests not found");
+      }
+
+      // Verify the swap makes sense
+      if (String(request1.requestedBatch) !== String(request2.student.enrolled_batch) ||
+          String(request2.requestedBatch) !== String(request1.student.enrolled_batch)) {
+        throw new Error("Invalid swap - batches don't match");
+      }
+
+      // Update both students' enrolled batches
+      await Promise.all([
+        studentsCollection.updateOne(
+          { _id: request1.student._id },
+          { $set: { enrolled_batch: new ObjectId(request2.requestedBatch) } },
+          { session }
+        ),
+        studentsCollection.updateOne(
+          { _id: request2.student._id },
+          { $set: { enrolled_batch: new ObjectId(request1.requestedBatch) } },
+          { session }
+        )
+      ]);
+
+      // Update both requests as approved
+      await Promise.all([
+        batchChangeRequestCollection.updateOne(
+          { _id: request1._id },
+          { 
+            $set: { 
+              status: "approved",
+              processedAt: new Date(),
+              swapWith: request2._id
+            } 
+          },
+          { session }
+        ),
+        batchChangeRequestCollection.updateOne(
+          { _id: request2._id },
+          { 
+            $set: { 
+              status: "approved",
+              processedAt: new Date(),
+              swapWith: request1._id
+            } 
+          },
+          { session }
+        )
+      ]);
+
+      // Update occupied seats in batches (if needed)
+      await Promise.all([
+        batchesCollection.updateOne(
+          { _id: new ObjectId(request1.requestedBatch) },
+          { $inc: { occupiedSeat: 1 } },
+          { session }
+        ),
+        batchesCollection.updateOne(
+          { _id: new ObjectId(request2.requestedBatch) },
+          { $inc: { occupiedSeat: 1 } },
+          { session }
+        )
+      ]);
+    });
+
+    res.status(200).json({ message: "Swap completed successfully" });
+  } catch (error) {
+    console.error("Error processing swap:", error);
+    res.status(500).json({ 
+      message: "Failed to process swap",
+      error: error.message 
+    });
+  } finally {
+    session.endSession();
+  }
+});
     
 
     await client.db("admin").command({ ping: 1 });
@@ -2004,6 +2270,8 @@ async function run() {
     // await client.close();
   }
 }
+
+
 
 run().catch(console.dir);
 
