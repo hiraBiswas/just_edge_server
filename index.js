@@ -46,6 +46,8 @@ async function run() {
     const resultCollection = client.db("just_edge").collection("result");
     const noticeCollection = client.db("just_edge").collection("notice");
     const batchChangeRequestCollection = client.db("just_edge").collection("batch_change_request");
+    const courseChangeRequestCollection = client.db("just_edge").collection("course_change_request");
+
 
     // JWT-related API
     app.post("/jwt", async (req, res) => {
@@ -2258,6 +2260,269 @@ app.patch('/batch-change-requests/swap', async (req, res) => {
     });
   } finally {
     session.endSession();
+  }
+});
+
+
+
+app.post("/course-change-requests", async (req, res) => {
+  try {
+    const { studentId, requestedCourse } = req.body;
+    
+    // Validate required fields
+    if (!studentId || !requestedCourse) {
+      return res.status(400).json({ message: "Missing required fields" });
+    }
+
+    // Create course change request
+    const courseRequest = {
+      studentId: new ObjectId(studentId),
+      requestedCourse: new ObjectId(requestedCourse),
+      status: "Pending",
+      timestamp: new Date(),
+    };
+
+    // Insert into database
+    await courseChangeRequestCollection.insertOne(courseRequest);
+    
+    res.status(201).json({ 
+      message: "Course change request submitted successfully",
+      request: {
+        studentId,
+        requestedCourse,
+        status: "Pending",
+        timestamp: courseRequest.timestamp
+      }
+    });
+    
+  } catch (error) {
+    console.error("Error handling course change request:", error);
+    
+    // Handle specific MongoDB errors
+    if (error instanceof MongoError) {
+      return res.status(400).json({ 
+        message: "Database error",
+        error: error.message 
+      });
+    }
+    
+    res.status(500).json({ 
+      message: "Internal server error",
+      error: error.message 
+    });
+  }
+});
+
+
+app.get("/course-change-requests", async (req, res) => {
+  try {
+    // Optionally, you can filter based on status or studentId
+    const { status, studentId } = req.query;
+    let filter = {};
+
+    // Apply filters if specified
+    if (status) {
+      filter.status = status;
+    }
+    if (studentId) {
+      filter.studentId = new ObjectId(studentId);
+    }
+
+    // Fetch batch change requests from the database
+    const courseChangeRequests = await courseChangeRequestCollection.find(filter).toArray();
+    
+    res.status(200).json(courseChangeRequests);
+  } catch (error) {
+    console.error("Error fetching batch change requests:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+
+app.patch("/course-change-requests/:requestId/approve", async (req, res) => {
+  const session = client.startSession();
+  
+  try {
+    console.log('=== STARTING REQUEST APPROVAL ===');
+    const { requestId } = req.params;
+    const { batchId } = req.body;
+
+    console.log('Received parameters:', { requestId, batchId });
+    
+    // Validate IDs
+    if (!ObjectId.isValid(requestId) || !ObjectId.isValid(batchId)) {
+      const errorMsg = `Invalid ID format - requestId: ${requestId}, batchId: ${batchId}`;
+      console.error(errorMsg);
+      throw new Error(errorMsg);
+    }
+    
+    await session.withTransaction(async () => {
+      console.log('Transaction started');
+      
+      // First check if request exists and is pending
+      console.log('Checking request status...');
+      const requestCheck = await courseChangeRequestCollection.findOne(
+        { _id: new ObjectId(requestId) },
+        { session }
+      );
+      
+      console.log('Request check result:', requestCheck);
+      
+      if (!requestCheck) {
+        throw new Error("Request not found");
+      }
+      
+      if (requestCheck.status !== "Pending") {
+        throw new Error(`Request already ${requestCheck.status}`);
+      }
+      
+      // Get student info
+      console.log('Fetching student info...');
+      const student = await studentsCollection.findOne(
+        { _id: requestCheck.studentId },
+        { session }
+      );
+      
+      console.log('Student found:', student);
+      
+      // Update the request
+      console.log('Updating request status to Approved...');
+      const updateRequestResult = await courseChangeRequestCollection.findOneAndUpdate(
+        {
+          _id: new ObjectId(requestId),
+          status: "Pending"
+        },
+        {
+          $set: {
+            status: "Approved",
+            assignedBatchId: new ObjectId(batchId),
+            resolvedAt: new Date()
+          }
+        },
+        {
+          returnDocument: 'after',
+          session
+        }
+      );
+      
+      const approvedRequest = updateRequestResult;
+      console.log('Request update result:', approvedRequest);
+      
+      // If student is already in a batch, decrement that batch's occupiedSeat
+      if (student && student.enrolled_batch) {
+        console.log(`Student currently in batch ${student.enrolled_batch}, decrementing seat...`);
+        const decrementResult = await batchesCollection.updateOne(
+          { _id: student.enrolled_batch },
+          { $inc: { occupiedSeat: -1 } },
+          { session }
+        );
+        
+        console.log('Decrement result:', decrementResult);
+      } else {
+        console.log('Student not currently in any batch');
+      }
+      
+      // Update the new batch's occupiedSeat
+      console.log(`Incrementing seat count for batch ${batchId}...`);
+      const batchUpdateResult = await batchesCollection.findOneAndUpdate(
+        { _id: new ObjectId(batchId) },
+        { $inc: { occupiedSeat: 1 } },
+        { 
+          session, 
+          returnDocument: 'after' 
+        }
+      );
+      
+      const updatedBatch = batchUpdateResult;
+      console.log('Batch update result:', updatedBatch);
+      
+      // Update student record
+      console.log('Updating student record...');
+      const studentUpdateResult = await studentsCollection.updateOne(
+        { _id: requestCheck.studentId },
+        {
+          $set: {
+            prefCourse: requestCheck.requestedCourse,
+            enrolled_batch: new ObjectId(batchId)
+          }
+        },
+        { session }
+      );
+      
+      console.log('Student update result:', studentUpdateResult);
+      
+      res.status(200).json({
+        success: true,
+        message: "Request approved successfully",
+        request: approvedRequest,
+        batch: updatedBatch
+      });
+      
+      console.log('=== TRANSACTION COMPLETED SUCCESSFULLY ===');
+    });
+  } catch (error) {
+    console.error("\n!!! ERROR IN APPROVAL PROCESS !!!");
+    console.error("Error message:", error.message);
+    console.error("Stack trace:", error.stack);
+    
+    const statusCode = error.message.includes("not found") ||
+                      error.message.includes("already") ||
+                      error.message.includes("no available seats")
+                      ? 400 : 500;
+    
+    res.status(statusCode).json({
+      success: false,
+      message: error.message,
+      details: error.message.includes("already")
+              ? "Please refresh the page to see current status"
+              : "Please verify your data and try again"
+    });
+  } finally {
+    console.log('Ending session...');
+    await session.endSession();
+    console.log('=== PROCESS COMPLETED ===\n');
+  }
+});
+
+
+
+// Reject course change request
+app.patch("/course-change-requests/:requestId/reject", async (req, res) => {
+  const session = client.startSession();
+  try {
+    const { requestId } = req.params;
+    const { reason } = req.body;
+
+    await session.withTransaction(async () => {
+      const request = await courseChangeRequestCollection.findOneAndUpdate(
+        { _id: new ObjectId(requestId), status: "Pending" },
+        { 
+          $set: { 
+            status: "Rejected",
+            rejectionReason: reason || "",
+            resolvedAt: new Date() 
+          }
+        },
+        { returnDocument: 'after', session }
+      );
+
+      if (!request.value) {
+        throw new Error("Request not found or already processed");
+      }
+
+      res.status(200).json({
+        message: "Request rejected successfully",
+        request: request.value
+      });
+    });
+  } catch (error) {
+    console.error("Rejection error:", error);
+    res.status(500).json({ 
+      message: "Failed to reject request",
+      error: error.message 
+    });
+  } finally {
+    await session.endSession();
   }
 });
     
