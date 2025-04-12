@@ -45,16 +45,19 @@ async function run() {
     const classesCollection = client.db("just_edge").collection("classes");
     const resultCollection = client.db("just_edge").collection("result");
     const noticeCollection = client.db("just_edge").collection("notice");
-    const batchChangeRequestCollection = client.db("just_edge").collection("batch_change_request");
-    const courseChangeRequestCollection = client.db("just_edge").collection("course_change_request");
-
+    const batchChangeRequestCollection = client
+      .db("just_edge")
+      .collection("batch_change_request");
+    const courseChangeRequestCollection = client
+      .db("just_edge")
+      .collection("course_change_request");
 
     // JWT-related API
     app.post("/jwt", async (req, res) => {
       try {
         const user = req.body;
         const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, {
-          expiresIn: "5min",
+          expiresIn: "30min",
         });
         res.send({ token });
       } catch (error) {
@@ -129,7 +132,6 @@ async function run() {
       }
     });
 
-   
     app.post("/users", async (req, res) => {
       const user = req.body;
 
@@ -202,7 +204,7 @@ async function run() {
         institution,
       } = req.body;
 
-      console.log("Received data:", req.body); // Log the incoming data
+      // console.log("Received data:", req.body);
 
       const studentData = {
         userId: new ObjectId(userId), // Convert userId to ObjectId
@@ -593,25 +595,29 @@ async function run() {
 
         const newBatch = {
           course_id: new ObjectId(batchData.course_id),
-          batchNumber: batchData.batchNumber, 
-          batchName: batchData.batchName || `${batchData.courseName} - ${batchData.batchNumber}`,
+          batchNumber: batchData.batchNumber,
+          batchName:
+            batchData.batchName ||
+            `${batchData.courseName} - ${batchData.batchNumber}`,
           startDate: batchData.startDate ? new Date(batchData.startDate) : null,
           endDate: batchData.endDate ? new Date(batchData.endDate) : null,
           seat: parseInt(batchData.seat) || 0,
           status: batchData.status || "Upcoming",
-          isDeleted: batchData.isDeleted !== undefined ? batchData.isDeleted : false,
+          isDeleted:
+            batchData.isDeleted !== undefined ? batchData.isDeleted : false,
           occupiedSeat: parseInt(batchData.occupiedSeat) || 0,
           createdAt: new Date(),
           instructorIds: [],
           instructors: [],
         };
-        
+
         console.log("Final batch object to insert:", newBatch);
 
         // Insert into database
         const result = await batchesCollection.insertOne(newBatch);
 
         if (result.insertedId) {
+          // Fixed the typo here (was insertEdId)
           // Return the complete saved document
           const savedBatch = await batchesCollection.findOne({
             _id: result.insertedId,
@@ -619,6 +625,7 @@ async function run() {
           res.status(201).json({
             message: "Batch created successfully",
             batch: savedBatch,
+            insertedId: result.insertedId, // Explicitly include insertedId
           });
         } else {
           res.status(500).json({ error: "Failed to create batch" });
@@ -632,46 +639,44 @@ async function run() {
       }
     });
 
- 
-
     app.get("/next-batch-number/:courseId", async (req, res) => {
       try {
         const courseId = req.params.courseId;
-             
+
         if (!courseId) {
           return res.status(400).json({ error: "Course ID is required" });
         }
-        
+
         // Convert string courseId to ObjectId for proper MongoDB comparison
         const objectIdCourseId = new ObjectId(courseId);
-          
+
         // Get all batches for this course with the corrected query
         const batches = await batchesCollection
           .find({ course_id: objectIdCourseId })
           .toArray();
-          
+
         // Rest of your code remains the same
-        const batchNumbers = batches.map(batch => parseInt(batch.batchNumber, 10));
-        const maxBatchNumber = batchNumbers.length > 0 
-          ? Math.max(...batchNumbers)
-          : 0;
+        const batchNumbers = batches.map((batch) =>
+          parseInt(batch.batchNumber, 10)
+        );
+        const maxBatchNumber =
+          batchNumbers.length > 0 ? Math.max(...batchNumbers) : 0;
         const nextBatchNumber = (maxBatchNumber + 1)
           .toString()
-          .padStart(3, '0');
-          
+          .padStart(3, "0");
+
         console.log(`Current max batch number: ${maxBatchNumber}`);
         console.log(`Generated next batch number: ${nextBatchNumber}`);
-          
+
         res.json({ nextBatchNumber });
       } catch (error) {
         console.error("Error generating batch number:", error);
         res.status(500).json({
           error: "Failed to generate batch number",
-          details: error.message
+          details: error.message,
         });
       }
     });
-    
 
     app.get("/batches/:id", async (req, res) => {
       const { id } = req.params;
@@ -752,7 +757,7 @@ async function run() {
               $project: {
                 _id: 1,
                 batchName: 1,
-                batchNumber:1,
+                batchNumber: 1,
                 course_id: 1,
                 status: 1,
                 startDate: 1,
@@ -1109,70 +1114,62 @@ async function run() {
     //   }
     // });
 
+    // New endpoint for batch routine creation
     app.post("/routine", async (req, res) => {
-      const { batchId, day, startTime, endTime } = req.body;
-
-      // Validate input
-      if (!batchId) {
-        return res.status(400).json({ message: "BatchId is required" });
-      }
-      if (!day || !startTime || !endTime) {
-        return res
-          .status(400)
-          .json({ message: "Day, startTime, and endTime are required" });
-      }
-
-      // Validate the batchId to make sure it's a valid MongoDB ObjectId
-      if (!ObjectId.isValid(batchId)) {
-        return res.status(400).json({ message: "Invalid batchId format" });
-      }
-
+      const session = client.startSession();
       try {
-        const newRoutine = {
-          batchId: new ObjectId(batchId),
-          day,
-          startTime,
-          endTime,
-          createdAt: new Date(),
-        };
+        const { batchId, schedules } = req.body;
 
-        const result = await routineCollection.insertOne(newRoutine);
-
-        return res.status(201).send({
-          message: "Routine entry created successfully.",
-          data: { id: result.insertedId },
-        });
-      } catch (error) {
-        console.error("Error creating routine:", error.message);
-        res.status(500).send({ error: "Internal server error." });
-      }
-    });
-
-    app.get("/routine", async (req, res) => {
-      const { batchId } = req.query;
-
-      try {
-        // Validate batchId
+        // Validate input
         if (!batchId) {
           return res.status(400).json({ message: "BatchId is required" });
         }
+        if (!schedules || !Array.isArray(schedules)) {
+          return res
+            .status(400)
+            .json({ message: "Schedules array is required" });
+        }
 
-        // Ensure batchId is a valid ObjectId
+        // Validate each schedule entry
+        for (const schedule of schedules) {
+          if (!schedule.day || !schedule.startTime || !schedule.endTime) {
+            return res.status(400).json({
+              message: "Each schedule must have day, startTime, and endTime",
+            });
+          }
+        }
+
+        // Validate the batchId
         if (!ObjectId.isValid(batchId)) {
           return res.status(400).json({ message: "Invalid batchId format" });
         }
 
-        // Find routines for the specific batch
-        const routines = await routineCollection
-          .find({ batchId: new ObjectId(batchId) })
-          .toArray();
+        await session.withTransaction(async () => {
+          const routinesToInsert = schedules.map((schedule) => ({
+            batchId: new ObjectId(batchId),
+            day: schedule.day,
+            startTime: schedule.startTime,
+            endTime: schedule.endTime,
+            createdAt: new Date(),
+          }));
 
-        return res.status(200).json(routines);
+          const result = await routineCollection.insertMany(routinesToInsert, {
+            session,
+          });
+
+          return res.status(201).send({
+            message: "Routine batch created successfully.",
+            data: { insertedCount: result.insertedCount },
+          });
+        });
       } catch (error) {
-        console.error("Error fetching routines:", error);
-        res.status(500).json({ message: "Internal server error" });
+        console.error("Error creating routine batch:", error.message);
+        res.status(500).send({ error: "Internal server error." });
+      } finally {
+        await session.endSession();
       }
     });
+
 
     app.get("/routine/:batchId", async (req, res) => {
       const { batchId } = req.params;
@@ -1279,133 +1276,192 @@ async function run() {
       }
     });
 
-    // app.patch("/routine/:batchId", async (req, res) => {
-    //   const { batchId } = req.params; // Get batchId from the URL parameters
-    //   const { schedule } = req.body; // Get updated schedule from the request body
+    // DELETE endpoint for routine
+app.delete("/routine/:routineId", async (req, res) => {
+  try {
+    const { routineId } = req.params;
 
-    //   console.log("Incoming PATCH Request for batchId:", batchId);
-    //   console.log("Updated Schedule:", schedule);
+    if (!ObjectId.isValid(routineId)) {
+      return res.status(400).send({ error: "Invalid routine ID format" });
+    }
 
-    //   if (!ObjectId.isValid(batchId)) {
-    //     return res.status(400).send({ error: "Invalid batch ID format" });
-    //   }
+    const result = await routineCollection.deleteOne({ 
+      _id: new ObjectId(routineId) 
+    });
 
-    //   try {
-    //     // Convert batchId to ObjectId before querying (use 'new' keyword)
-    //     const existingRoutine = await routineCollection.findOne({
-    //       batchId: new ObjectId(batchId),
-    //     });
+    if (result.deletedCount === 0) {
+      return res.status(404).send({ error: "Routine not found" });
+    }
 
-    //     if (!existingRoutine) {
-    //       // If routine with the batchId doesn't exist
-    //       console.log(`Routine not found for batchId: ${batchId}`);
-    //       return res.status(404).json({ message: "Routine not found" });
-    //     }
-
-    //     // If routine exists, update the schedule
-    //     const updateResult = await routineCollection.updateOne(
-    //       { batchId: new ObjectId(batchId) }, // Use 'new ObjectId()' here
-    //       { $set: { schedule } } // Update the schedule field
-    //     );
-
-    //     if (updateResult.modifiedCount === 0) {
-    //       // If no changes were made
-    //       return res
-    //         .status(400)
-    //         .json({ message: "No changes were made to the routine." });
-    //     }
-
-    //     // Fetch and send back the updated routine
-    //     const updatedRoutine = await routineCollection.findOne({
-    //       batchId: new ObjectId(batchId),
-    //     });
-    //     res.status(200).json(updatedRoutine);
-    //   } catch (error) {
-    //     console.error("Error updating routine:", error);
-    //     res
-    //       .status(500)
-    //       .json({
-    //         message: "Failed to update the routine",
-    //         error: error.message,
-    //       });
-    //   }
-    // });
+    res.status(200).send({ 
+      success: true, 
+      message: "Routine deleted successfully" 
+    });
+  } catch (error) {
+    console.error("Error deleting routine:", error);
+    res.status(500).send({ error: "Internal server error" });
+  }
+});
+    
 
     app.get("/instructors/:instructorId/classes", async (req, res) => {
       const { instructorId } = req.params;
-
-      // Validate instructorId
+    
       if (!isValidObjectId(instructorId)) {
         return res.status(400).json({ message: "Invalid instructorId format" });
       }
-
+    
       try {
-        // Step 1: Get batches assigned to the instructor
+        // 1. Get all batches where this instructor is assigned
         const assignedBatches = await instructorsBatchesCollection
-          .find({ instructorId: new ObjectId(instructorId) })
+          .find({
+            instructorId: new ObjectId(instructorId),
+          })
           .toArray();
-
-        const batchIds = assignedBatches.map(
-          (entry) => new ObjectId(entry.batchId)
-        );
-
-        if (batchIds.length === 0) {
-          return res
-            .status(404)
-            .json({ message: "No batches assigned to this instructor" });
+    
+        if (assignedBatches.length === 0) {
+          return res.status(200).json({
+            success: true,
+            message: "No classes found for this instructor",
+            schedule: {},
+            conflicts: [],
+            classCounts: {},
+            batchStatuses: {},
+          });
         }
-
-        // Step 2: Fetch routines for those batches
-        const routines = await routineCollection
-          .find({ batchId: { $in: batchIds } })
+    
+        const batchIds = assignedBatches.map((b) => new ObjectId(b.batchId));
+    
+        // 2. Get batch statuses for all assigned batches
+        const batches = await batchesCollection
+          .find({
+            _id: { $in: batchIds },
+          })
           .toArray();
-
-        // Step 3: Combine all schedules with day, startTime, and endTime
-        const scheduleMap = {};
-
+    
+        // Create a map of batchId to status
+        const batchStatuses = batches.reduce((acc, batch) => {
+          acc[batch._id.toString()] = batch.status;
+          return acc;
+        }, {});
+    
+        // 3. Get ALL routines for these batches
+        const allRoutines = await routineCollection
+          .find({
+            batchId: { $in: batchIds },
+          })
+          .toArray();
+    
+        // Filter out routines from completed batches
+        const routines = allRoutines.filter(routine => {
+          const status = batchStatuses[routine.batchId.toString()];
+          return status !== 'Completed';
+        });
+    
+        // 4. Organize by day and detect overlaps
+        const scheduleByDay = {};
+        const conflicts = [];
+    
         routines.forEach((routine) => {
-          routine.schedule.forEach((session) => {
-            const key = `${session.day} ${session.startTime} - ${session.endTime}`; // Corrected key
-
-            if (!scheduleMap[key]) {
-              scheduleMap[key] = [];
+          const { day, startTime, endTime } = routine;
+    
+          if (!scheduleByDay[day]) {
+            scheduleByDay[day] = [];
+          }
+    
+          // Check for overlaps with existing classes on this day
+          scheduleByDay[day].forEach((existingClass) => {
+            if (
+              hasTimeOverlap(
+                startTime,
+                endTime,
+                existingClass.startTime,
+                existingClass.endTime
+              )
+            ) {
+              conflicts.push({
+                day,
+                existingClass: {
+                  batchId: existingClass.batchId,
+                  time: `${existingClass.startTime}-${existingClass.endTime}`,
+                },
+                conflictingClass: {
+                  batchId: routine.batchId,
+                  time: `${startTime}-${endTime}`,
+                },
+              });
             }
-
-            scheduleMap[key].push({
-              batchId: routine.batchId,
-              day: session.day,
-              startTime: session.startTime,
-              endTime: session.endTime,
-            });
+          });
+    
+          // Add to schedule
+          scheduleByDay[day].push({
+            batchId: routine.batchId,
+            startTime,
+            endTime,
           });
         });
-
-        // Step 4: Identify conflicts
-        const conflicts = Object.entries(scheduleMap).filter(
-          ([key, sessions]) => sessions.length > 1
-        );
-
+    
+        // 5. Check maximum classes per day (2 classes max)
+        Object.entries(scheduleByDay).forEach(([day, classes]) => {
+          if (classes.length > 2) {
+            conflicts.push({
+              day,
+              message: `Maximum classes (2) exceeded on ${day}`,
+            });
+          }
+        });
+    
+        // Calculate class counts per day (excluding completed batches)
+        const classCounts = Object.keys(scheduleByDay).reduce((acc, day) => {
+          acc[day] = scheduleByDay[day].length;
+          return acc;
+        }, {});
+    
         if (conflicts.length > 0) {
-          return res.status(400).json({
+          return res.status(409).json({
             success: false,
-            message: "Instructor has schedule conflicts.",
-            conflicts: conflicts.map(([key, sessions]) => ({
-              dayTime: key,
-              batches: sessions.map((s) => s.batchId),
+            message: "Schedule conflicts detected",
+            detailedConflicts: conflicts.map((conflict) => ({
+              type: conflict.message ? "MAX_CLASSES" : "TIME_OVERLAP",
+              day: conflict.day,
+              existingTime: conflict.existingClass?.time,
+              newTime: conflict.conflictingClass?.time,
+              batchIds: conflict.existingClass
+                ? [
+                    conflict.existingClass.batchId,
+                    conflict.conflictingClass.batchId,
+                  ]
+                : [],
             })),
+            classCounts,
+            batchStatuses,
           });
         }
-
+    
         res.status(200).json({
           success: true,
-          message: "Instructor's schedule is conflict-free.",
-          schedule: scheduleMap,
+          schedule: scheduleByDay,
+          conflicts,
+          classCounts,
+          batchStatuses,
         });
       } catch (error) {
-        console.error("Error fetching instructor classes:", error);
+        console.error("Error:", error);
         res.status(500).json({ message: "Internal server error" });
       }
     });
+
+    // Time overlap helper (same as frontend)
+    function hasTimeOverlap(start1, end1, start2, end2) {
+      const getMins = (time) => {
+        const [h, m] = time.split(":").map(Number);
+        return h * 60 + m;
+      };
+      return (
+        Math.max(getMins(start1), getMins(start2)) <
+        Math.min(getMins(end1), getMins(end2))
+      );
+    }
 
     app.post("/classes", async (req, res) => {
       const { batchId, instructorId, date, startTime, endTime } = req.body;
@@ -1806,24 +1862,22 @@ async function run() {
 
     app.post("/notice", async (req, res) => {
       try {
-        console.log("📥 Received Notice Data:", req.body);
+        // console.log("📥 Received Notice Data:", req.body);
 
         const { title, description, tags, attachment, deadline } = req.body;
 
-        if (!title || !description) {
-          console.warn("⚠️ Missing Required Fields:", { title, description });
-          return res
-            .status(400)
-            .json({ message: "Title and description are required." });
+        if (!title) {
+          console.warn("⚠️ Missing Required Fields:", { title });
+          return res.status(400).json({ message: "Title is required." });
         }
 
-        console.log("📌 Parsed Notice Data:", {
-          title,
-          description,
-          tags,
-          attachment,
-          deadline,
-        });
+        // console.log("📌 Parsed Notice Data:", {
+        //   title,
+        //   description,
+        //   tags,
+        //   attachment,
+        //   deadline,
+        // });
 
         // Prepare the notice data for insertion
         const newNotice = {
@@ -1838,7 +1892,7 @@ async function run() {
         // Insert into MongoDB collection
         const result = await noticeCollection.insertOne(newNotice);
 
-        console.log("✅ Notice saved to DB:", result);
+        // console.log("✅ Notice saved to DB:", result);
 
         // Send success response with the saved notice data
         res
@@ -1855,7 +1909,7 @@ async function run() {
       try {
         const notices = await noticeCollection.find({}).toArray();
 
-        console.log("✅ Notices fetched:", notices.length);
+        // console.log("✅ Notices fetched:", notices.length);
 
         res.setHeader("Content-Type", "application/json");
         res.status(200).json(notices);
@@ -1919,14 +1973,13 @@ async function run() {
       }
     });
 
-
     app.post("/batch-change-requests", async (req, res) => {
       try {
         const { studentId, requestedBatch } = req.body;
         if (!studentId || !requestedBatch) {
           return res.status(400).json({ message: "Missing required fields" });
         }
-    
+
         // Create batch change request
         const batchRequest = {
           studentId: new ObjectId(studentId),
@@ -1934,9 +1987,11 @@ async function run() {
           status: "Pending",
           timestamp: new Date(),
         };
-    
+
         await batchChangeRequestCollection.insertOne(batchRequest);
-        res.status(201).json({ message: "Batch change request submitted successfully" });
+        res
+          .status(201)
+          .json({ message: "Batch change request submitted successfully" });
       } catch (error) {
         console.error("Error handling batch change request:", error);
         res.status(500).json({ message: "Internal server error" });
@@ -1948,7 +2003,7 @@ async function run() {
         // Optionally, you can filter based on status or studentId
         const { status, studentId } = req.query;
         let filter = {};
-    
+
         // Apply filters if specified
         if (status) {
           filter.status = status;
@@ -1956,10 +2011,12 @@ async function run() {
         if (studentId) {
           filter.studentId = new ObjectId(studentId);
         }
-    
+
         // Fetch batch change requests from the database
-        const batchChangeRequests = await batchChangeRequestCollection.find(filter).toArray();
-        
+        const batchChangeRequests = await batchChangeRequestCollection
+          .find(filter)
+          .toArray();
+
         res.status(200).json(batchChangeRequests);
       } catch (error) {
         console.error("Error fetching batch change requests:", error);
@@ -1967,565 +2024,620 @@ async function run() {
       }
     });
 
+    app.patch("/batch-change-requests/:requestId/approve", async (req, res) => {
+      const { requestId } = req.params;
 
-    
-app.patch("/batch-change-requests/:requestId/approve", async (req, res) => {
-  const { requestId } = req.params;
-
-  if (!isValidObjectId(requestId)) {
-    return res.status(400).json({ error: "Invalid request ID format" });
-  }
-
-  try {
-    // Start a transaction
-    const session = client.startSession();
-    await session.withTransaction(async () => {
-      // 1. Get the request details
-      const request = await batchChangeRequestCollection.findOne(
-        { _id: new ObjectId(requestId), status: "Pending" },
-        { session }
-      );
-
-      if (!request) {
-        throw new Error("Request not found or already processed");
+      if (!isValidObjectId(requestId)) {
+        return res.status(400).json({ error: "Invalid request ID format" });
       }
 
-      // 2. Update the student's enrolled_batch
-      const studentUpdate = await studentsCollection.updateOne(
-        { _id: new ObjectId(request.studentId) },
-        { $set: { enrolled_batch: new ObjectId(request.requestedBatch) } },
-        { session }
-      );
+      try {
+        const session = client.startSession();
+        await session.withTransaction(async () => {
+          // 1. Get the request and current student data
+          const request = await batchChangeRequestCollection.findOne(
+            { _id: new ObjectId(requestId), status: "Pending" },
+            { session }
+          );
 
-      if (studentUpdate.modifiedCount !== 1) {
-        throw new Error("Failed to update student's batch");
-      }
+          if (!request) {
+            throw new Error("Request not found or already processed");
+          }
 
-      // 3. Update the batch's occupiedSeat count
-      const batchUpdate = await batchesCollection.updateOne(
-        { _id: new ObjectId(request.requestedBatch) },
-        { $inc: { occupiedSeat: 1 } },
-        { session }
-      );
+          const student = await studentsCollection.findOne(
+            { _id: new ObjectId(request.studentId) },
+            { session }
+          );
 
-      if (batchUpdate.modifiedCount !== 1) {
-        throw new Error("Failed to update batch seat count");
-      }
+          if (!student) {
+            throw new Error("Student not found");
+          }
 
-      // 4. Mark the request as approved
-      const requestUpdate = await batchChangeRequestCollection.updateOne(
-        { _id: new ObjectId(requestId) },
-        { $set: { status: "approved", processedAt: new Date() } },
-        { session }
-      );
+          // 2. Decrement seat count in old batch (if exists)
+          if (student.enrolled_batch) {
+            const oldBatchUpdate = await batchesCollection.updateOne(
+              { _id: new ObjectId(student.enrolled_batch) },
+              { $inc: { occupiedSeat: -1 } },
+              { session }
+            );
 
-      if (requestUpdate.modifiedCount !== 1) {
-        throw new Error("Failed to update request status");
+            if (oldBatchUpdate.modifiedCount !== 1) {
+              throw new Error("Failed to update old batch seat count");
+            }
+          }
+
+          // 3. Update student's enrolled_batch
+          const studentUpdate = await studentsCollection.updateOne(
+            { _id: new ObjectId(request.studentId) },
+            { $set: { enrolled_batch: new ObjectId(request.requestedBatch) } },
+            { session }
+          );
+
+          if (studentUpdate.modifiedCount !== 1) {
+            throw new Error("Failed to update student's batch");
+          }
+
+          // 4. Increment seat count in new batch
+          const newBatchUpdate = await batchesCollection.updateOne(
+            { _id: new ObjectId(request.requestedBatch) },
+            { $inc: { occupiedSeat: 1 } },
+            { session }
+          );
+
+          if (newBatchUpdate.modifiedCount !== 1) {
+            throw new Error("Failed to update new batch seat count");
+          }
+
+          // 5. Mark request as approved
+          const requestUpdate = await batchChangeRequestCollection.updateOne(
+            { _id: new ObjectId(requestId) },
+            { $set: { status: "approved", processedAt: new Date() } },
+            { session }
+          );
+
+          if (requestUpdate.modifiedCount !== 1) {
+            throw new Error("Failed to update request status");
+          }
+        });
+
+        res.status(200).json({ message: "Request approved successfully" });
+      } catch (error) {
+        console.error("Error approving request:", error);
+        res.status(500).json({
+          message: "Failed to approve request",
+          error: error.message,
+        });
       }
     });
 
-    res.status(200).json({ message: "Request approved successfully" });
-  } catch (error) {
-    console.error("Error approving request:", error);
-    res.status(500).json({ 
-      message: "Failed to approve request",
-      error: error.message 
+    app.patch("/batch-change-requests/:requestId/reject", async (req, res) => {
+      const { requestId } = req.params;
+
+      if (!isValidObjectId(requestId)) {
+        return res.status(400).json({ error: "Invalid request ID format" });
+      }
+
+      try {
+        // Update only if the request is still pending
+        const result = await batchChangeRequestCollection.updateOne(
+          {
+            _id: new ObjectId(requestId),
+            status: "Pending", // Only reject if still pending
+          },
+          {
+            $set: {
+              status: "rejected",
+              rejectedAt: new Date(),
+              rejectionReason: req.body.reason || null, // Optional rejection reason
+            },
+          }
+        );
+
+        if (result.modifiedCount === 0) {
+          return res.status(404).json({
+            message: "Request not found or already processed",
+          });
+        }
+
+        res.status(200).json({ message: "Request rejected successfully" });
+      } catch (error) {
+        console.error("Error rejecting request:", error);
+        res.status(500).json({
+          message: "Failed to reject request",
+          error: error.message,
+        });
+      }
     });
-  }
-});
 
-app.patch("/batch-change-requests/:requestId/reject", async (req, res) => {
-  const { requestId } = req.params;
+    // Add this to your server.js
+    app.get(
+      "/batch-change-requests/swap-candidates/:requestId",
+      async (req, res) => {
+        try {
+          const { requestId } = req.params;
 
-  if (!isValidObjectId(requestId)) {
-    return res.status(400).json({ error: "Invalid request ID format" });
-  }
+          if (!isValidObjectId(requestId)) {
+            return res.status(400).json({ error: "Invalid request ID format" });
+          }
 
-  try {
-    // Update only if the request is still pending
-    const result = await batchChangeRequestCollection.updateOne(
-      { 
-        _id: new ObjectId(requestId),
-        status: "Pending" // Only reject if still pending
-      },
-      { 
-        $set: { 
-          status: "rejected",
-          rejectedAt: new Date(),
-          rejectionReason: req.body.reason || null // Optional rejection reason
-        } 
+          // Get the current request
+          const currentRequest = await batchChangeRequestCollection.findOne({
+            _id: new ObjectId(requestId),
+            status: "Pending",
+          });
+
+          if (!currentRequest) {
+            return res
+              .status(404)
+              .json({ message: "Request not found or already processed" });
+          }
+
+          // Get the requested batch details
+          const requestedBatch = await batchesCollection.findOne({
+            _id: new ObjectId(currentRequest.requestedBatch),
+          });
+
+          if (!requestedBatch) {
+            return res
+              .status(404)
+              .json({ message: "Requested batch not found" });
+          }
+
+          // Find potential swap candidates (students wanting to move from the requested batch to current batch)
+          const swapCandidates = await batchChangeRequestCollection
+            .aggregate([
+              {
+                $match: {
+                  status: "Pending",
+                  requestedBatch: currentRequest.currentBatch, // They want to move to current student's batch
+                  studentId: { $ne: currentRequest.studentId }, // Exclude current student
+                },
+              },
+              {
+                $lookup: {
+                  from: "students",
+                  localField: "studentId",
+                  foreignField: "_id",
+                  as: "student",
+                },
+              },
+              { $unwind: "$student" },
+              {
+                $match: {
+                  "student.enrolled_batch": requestedBatch._id, // They're currently in the batch we want
+                },
+              },
+              {
+                $lookup: {
+                  from: "users",
+                  localField: "student.userId",
+                  foreignField: "_id",
+                  as: "user",
+                },
+              },
+              { $unwind: "$user" },
+              {
+                $project: {
+                  _id: 1,
+                  studentName: "$user.name",
+                  studentId: "$student._id",
+                  currentBatch: "$student.enrolled_batch",
+                  requestedBatch: 1,
+                  timestamp: 1,
+                },
+              },
+            ])
+            .toArray();
+
+          res.status(200).json(swapCandidates);
+        } catch (error) {
+          console.error("Error finding swap candidates:", error);
+          res.status(500).json({ message: "Error finding swap candidates" });
+        }
       }
     );
 
-    if (result.modifiedCount === 0) {
-      return res.status(404).json({ 
-        message: "Request not found or already processed" 
-      });
-    }
+    app.patch("/batch-change-requests/swap", async (req, res) => {
+      const { requestId1, requestId2 } = req.body;
+      const session = client.startSession();
 
-    res.status(200).json({ message: "Request rejected successfully" });
-  } catch (error) {
-    console.error("Error rejecting request:", error);
-    res.status(500).json({ 
-      message: "Failed to reject request",
-      error: error.message 
+      try {
+        await session.withTransaction(async () => {
+          // Get both requests with all necessary data
+          const [request1, request2] = await Promise.all([
+            batchChangeRequestCollection
+              .findOne({ _id: new ObjectId(requestId1) }, { session })
+              .then(async (req) => {
+                if (!req) return null;
+                const student = await studentsCollection.findOne(
+                  { _id: new ObjectId(req.studentId) },
+                  { session }
+                );
+                return { ...req, student };
+              }),
+            batchChangeRequestCollection
+              .findOne({ _id: new ObjectId(requestId2) }, { session })
+              .then(async (req) => {
+                if (!req) return null;
+                const student = await studentsCollection.findOne(
+                  { _id: new ObjectId(req.studentId) },
+                  { session }
+                );
+                return { ...req, student };
+              }),
+          ]);
+
+          if (!request1 || !request2) {
+            throw new Error("One or both requests not found");
+          }
+
+          // Verify the swap makes sense
+          if (
+            String(request1.requestedBatch) !==
+              String(request2.student.enrolled_batch) ||
+            String(request2.requestedBatch) !==
+              String(request1.student.enrolled_batch)
+          ) {
+            throw new Error("Invalid swap - batches don't match");
+          }
+
+          // Update both students' enrolled batches
+          await Promise.all([
+            studentsCollection.updateOne(
+              { _id: request1.student._id },
+              {
+                $set: { enrolled_batch: new ObjectId(request2.requestedBatch) },
+              },
+              { session }
+            ),
+            studentsCollection.updateOne(
+              { _id: request2.student._id },
+              {
+                $set: { enrolled_batch: new ObjectId(request1.requestedBatch) },
+              },
+              { session }
+            ),
+          ]);
+
+          // Update both requests as approved
+          await Promise.all([
+            batchChangeRequestCollection.updateOne(
+              { _id: request1._id },
+              {
+                $set: {
+                  status: "approved",
+                  processedAt: new Date(),
+                  swapWith: request2._id,
+                },
+              },
+              { session }
+            ),
+            batchChangeRequestCollection.updateOne(
+              { _id: request2._id },
+              {
+                $set: {
+                  status: "approved",
+                  processedAt: new Date(),
+                  swapWith: request1._id,
+                },
+              },
+              { session }
+            ),
+          ]);
+
+          // Update occupied seats in batches (if needed)
+          await Promise.all([
+            batchesCollection.updateOne(
+              { _id: new ObjectId(request1.requestedBatch) },
+              { $inc: { occupiedSeat: 1 } },
+              { session }
+            ),
+            batchesCollection.updateOne(
+              { _id: new ObjectId(request2.requestedBatch) },
+              { $inc: { occupiedSeat: 1 } },
+              { session }
+            ),
+          ]);
+        });
+
+        res.status(200).json({ message: "Swap completed successfully" });
+      } catch (error) {
+        console.error("Error processing swap:", error);
+        res.status(500).json({
+          message: "Failed to process swap",
+          error: error.message,
+        });
+      } finally {
+        session.endSession();
+      }
     });
-  }
-});
 
+    app.post("/course-change-requests", async (req, res) => {
+      try {
+        const { studentId, requestedCourse } = req.body;
 
-// Add this to your server.js
-app.get('/batch-change-requests/swap-candidates/:requestId', async (req, res) => {
-  try {
-    const { requestId } = req.params;
-    
-    if (!isValidObjectId(requestId)) {
-      return res.status(400).json({ error: "Invalid request ID format" });
-    }
+        // Validate required fields
+        if (!studentId || !requestedCourse) {
+          return res.status(400).json({ message: "Missing required fields" });
+        }
 
-    // Get the current request
-    const currentRequest = await batchChangeRequestCollection.findOne({
-      _id: new ObjectId(requestId),
-      status: "Pending"
-    });
-
-    if (!currentRequest) {
-      return res.status(404).json({ message: "Request not found or already processed" });
-    }
-
-    // Get the requested batch details
-    const requestedBatch = await batchesCollection.findOne({
-      _id: new ObjectId(currentRequest.requestedBatch)
-    });
-
-    if (!requestedBatch) {
-      return res.status(404).json({ message: "Requested batch not found" });
-    }
-
-    // Find potential swap candidates (students wanting to move from the requested batch to current batch)
-    const swapCandidates = await batchChangeRequestCollection.aggregate([
-      {
-        $match: {
+        // Create course change request
+        const courseRequest = {
+          studentId: new ObjectId(studentId),
+          requestedCourse: new ObjectId(requestedCourse),
           status: "Pending",
-          requestedBatch: currentRequest.currentBatch, // They want to move to current student's batch
-          studentId: { $ne: currentRequest.studentId } // Exclude current student
-        }
-      },
-      {
-        $lookup: {
-          from: "students",
-          localField: "studentId",
-          foreignField: "_id",
-          as: "student"
-        }
-      },
-      { $unwind: "$student" },
-      {
-        $match: {
-          "student.enrolled_batch": requestedBatch._id // They're currently in the batch we want
-        }
-      },
-      {
-        $lookup: {
-          from: "users",
-          localField: "student.userId",
-          foreignField: "_id",
-          as: "user"
-        }
-      },
-      { $unwind: "$user" },
-      {
-        $project: {
-          _id: 1,
-          studentName: "$user.name",
-          studentId: "$student._id",
-          currentBatch: "$student.enrolled_batch",
-          requestedBatch: 1,
-          timestamp: 1
-        }
-      }
-    ]).toArray();
+          timestamp: new Date(),
+        };
 
-    res.status(200).json(swapCandidates);
-  } catch (error) {
-    console.error("Error finding swap candidates:", error);
-    res.status(500).json({ message: "Error finding swap candidates" });
-  }
-});
+        // Insert into database
+        await courseChangeRequestCollection.insertOne(courseRequest);
 
-
-app.patch('/batch-change-requests/swap', async (req, res) => {
-  const { requestId1, requestId2 } = req.body;
-  const session = client.startSession();
-
-  try {
-    await session.withTransaction(async () => {
-      // Get both requests with all necessary data
-      const [request1, request2] = await Promise.all([
-        batchChangeRequestCollection.findOne(
-          { _id: new ObjectId(requestId1) },
-          { session }
-        ).then(async req => {
-          if (!req) return null;
-          const student = await studentsCollection.findOne(
-            { _id: new ObjectId(req.studentId) },
-            { session }
-          );
-          return { ...req, student };
-        }),
-        batchChangeRequestCollection.findOne(
-          { _id: new ObjectId(requestId2) },
-          { session }
-        ).then(async req => {
-          if (!req) return null;
-          const student = await studentsCollection.findOne(
-            { _id: new ObjectId(req.studentId) },
-            { session }
-          );
-          return { ...req, student };
-        })
-      ]);
-
-      if (!request1 || !request2) {
-        throw new Error("One or both requests not found");
-      }
-
-      // Verify the swap makes sense
-      if (String(request1.requestedBatch) !== String(request2.student.enrolled_batch) ||
-          String(request2.requestedBatch) !== String(request1.student.enrolled_batch)) {
-        throw new Error("Invalid swap - batches don't match");
-      }
-
-      // Update both students' enrolled batches
-      await Promise.all([
-        studentsCollection.updateOne(
-          { _id: request1.student._id },
-          { $set: { enrolled_batch: new ObjectId(request2.requestedBatch) } },
-          { session }
-        ),
-        studentsCollection.updateOne(
-          { _id: request2.student._id },
-          { $set: { enrolled_batch: new ObjectId(request1.requestedBatch) } },
-          { session }
-        )
-      ]);
-
-      // Update both requests as approved
-      await Promise.all([
-        batchChangeRequestCollection.updateOne(
-          { _id: request1._id },
-          { 
-            $set: { 
-              status: "approved",
-              processedAt: new Date(),
-              swapWith: request2._id
-            } 
+        res.status(201).json({
+          message: "Course change request submitted successfully",
+          request: {
+            studentId,
+            requestedCourse,
+            status: "Pending",
+            timestamp: courseRequest.timestamp,
           },
-          { session }
-        ),
-        batchChangeRequestCollection.updateOne(
-          { _id: request2._id },
-          { 
-            $set: { 
-              status: "approved",
-              processedAt: new Date(),
-              swapWith: request1._id
-            } 
-          },
-          { session }
-        )
-      ]);
+        });
+      } catch (error) {
+        console.error("Error handling course change request:", error);
 
-      // Update occupied seats in batches (if needed)
-      await Promise.all([
-        batchesCollection.updateOne(
-          { _id: new ObjectId(request1.requestedBatch) },
-          { $inc: { occupiedSeat: 1 } },
-          { session }
-        ),
-        batchesCollection.updateOne(
-          { _id: new ObjectId(request2.requestedBatch) },
-          { $inc: { occupiedSeat: 1 } },
-          { session }
-        )
-      ]);
-    });
-
-    res.status(200).json({ message: "Swap completed successfully" });
-  } catch (error) {
-    console.error("Error processing swap:", error);
-    res.status(500).json({ 
-      message: "Failed to process swap",
-      error: error.message 
-    });
-  } finally {
-    session.endSession();
-  }
-});
-
-
-
-app.post("/course-change-requests", async (req, res) => {
-  try {
-    const { studentId, requestedCourse } = req.body;
-    
-    // Validate required fields
-    if (!studentId || !requestedCourse) {
-      return res.status(400).json({ message: "Missing required fields" });
-    }
-
-    // Create course change request
-    const courseRequest = {
-      studentId: new ObjectId(studentId),
-      requestedCourse: new ObjectId(requestedCourse),
-      status: "Pending",
-      timestamp: new Date(),
-    };
-
-    // Insert into database
-    await courseChangeRequestCollection.insertOne(courseRequest);
-    
-    res.status(201).json({ 
-      message: "Course change request submitted successfully",
-      request: {
-        studentId,
-        requestedCourse,
-        status: "Pending",
-        timestamp: courseRequest.timestamp
-      }
-    });
-    
-  } catch (error) {
-    console.error("Error handling course change request:", error);
-    
-    // Handle specific MongoDB errors
-    if (error instanceof MongoError) {
-      return res.status(400).json({ 
-        message: "Database error",
-        error: error.message 
-      });
-    }
-    
-    res.status(500).json({ 
-      message: "Internal server error",
-      error: error.message 
-    });
-  }
-});
-
-
-app.get("/course-change-requests", async (req, res) => {
-  try {
-    // Optionally, you can filter based on status or studentId
-    const { status, studentId } = req.query;
-    let filter = {};
-
-    // Apply filters if specified
-    if (status) {
-      filter.status = status;
-    }
-    if (studentId) {
-      filter.studentId = new ObjectId(studentId);
-    }
-
-    // Fetch batch change requests from the database
-    const courseChangeRequests = await courseChangeRequestCollection.find(filter).toArray();
-    
-    res.status(200).json(courseChangeRequests);
-  } catch (error) {
-    console.error("Error fetching batch change requests:", error);
-    res.status(500).json({ message: "Internal server error" });
-  }
-});
-
-
-app.patch("/course-change-requests/:requestId/approve", async (req, res) => {
-  const session = client.startSession();
-  
-  try {
-    console.log('=== STARTING REQUEST APPROVAL ===');
-    const { requestId } = req.params;
-    const { batchId } = req.body;
-
-    console.log('Received parameters:', { requestId, batchId });
-    
-    // Validate IDs
-    if (!ObjectId.isValid(requestId) || !ObjectId.isValid(batchId)) {
-      const errorMsg = `Invalid ID format - requestId: ${requestId}, batchId: ${batchId}`;
-      console.error(errorMsg);
-      throw new Error(errorMsg);
-    }
-    
-    await session.withTransaction(async () => {
-      console.log('Transaction started');
-      
-      // First check if request exists and is pending
-      console.log('Checking request status...');
-      const requestCheck = await courseChangeRequestCollection.findOne(
-        { _id: new ObjectId(requestId) },
-        { session }
-      );
-      
-      console.log('Request check result:', requestCheck);
-      
-      if (!requestCheck) {
-        throw new Error("Request not found");
-      }
-      
-      if (requestCheck.status !== "Pending") {
-        throw new Error(`Request already ${requestCheck.status}`);
-      }
-      
-      // Get student info
-      console.log('Fetching student info...');
-      const student = await studentsCollection.findOne(
-        { _id: requestCheck.studentId },
-        { session }
-      );
-      
-      console.log('Student found:', student);
-      
-      // Update the request
-      console.log('Updating request status to Approved...');
-      const updateRequestResult = await courseChangeRequestCollection.findOneAndUpdate(
-        {
-          _id: new ObjectId(requestId),
-          status: "Pending"
-        },
-        {
-          $set: {
-            status: "Approved",
-            assignedBatchId: new ObjectId(batchId),
-            resolvedAt: new Date()
-          }
-        },
-        {
-          returnDocument: 'after',
-          session
+        // Handle specific MongoDB errors
+        if (error instanceof MongoError) {
+          return res.status(400).json({
+            message: "Database error",
+            error: error.message,
+          });
         }
-      );
-      
-      const approvedRequest = updateRequestResult;
-      console.log('Request update result:', approvedRequest);
-      
-      // If student is already in a batch, decrement that batch's occupiedSeat
-      if (student && student.enrolled_batch) {
-        console.log(`Student currently in batch ${student.enrolled_batch}, decrementing seat...`);
-        const decrementResult = await batchesCollection.updateOne(
-          { _id: student.enrolled_batch },
-          { $inc: { occupiedSeat: -1 } },
-          { session }
-        );
-        
-        console.log('Decrement result:', decrementResult);
-      } else {
-        console.log('Student not currently in any batch');
+
+        res.status(500).json({
+          message: "Internal server error",
+          error: error.message,
+        });
       }
-      
-      // Update the new batch's occupiedSeat
-      console.log(`Incrementing seat count for batch ${batchId}...`);
-      const batchUpdateResult = await batchesCollection.findOneAndUpdate(
-        { _id: new ObjectId(batchId) },
-        { $inc: { occupiedSeat: 1 } },
-        { 
-          session, 
-          returnDocument: 'after' 
-        }
-      );
-      
-      const updatedBatch = batchUpdateResult;
-      console.log('Batch update result:', updatedBatch);
-      
-      // Update student record
-      console.log('Updating student record...');
-      const studentUpdateResult = await studentsCollection.updateOne(
-        { _id: requestCheck.studentId },
-        {
-          $set: {
-            prefCourse: requestCheck.requestedCourse,
-            enrolled_batch: new ObjectId(batchId)
-          }
-        },
-        { session }
-      );
-      
-      console.log('Student update result:', studentUpdateResult);
-      
-      res.status(200).json({
-        success: true,
-        message: "Request approved successfully",
-        request: approvedRequest,
-        batch: updatedBatch
-      });
-      
-      console.log('=== TRANSACTION COMPLETED SUCCESSFULLY ===');
     });
-  } catch (error) {
-    console.error("\n!!! ERROR IN APPROVAL PROCESS !!!");
-    console.error("Error message:", error.message);
-    console.error("Stack trace:", error.stack);
-    
-    const statusCode = error.message.includes("not found") ||
-                      error.message.includes("already") ||
-                      error.message.includes("no available seats")
-                      ? 400 : 500;
-    
-    res.status(statusCode).json({
-      success: false,
-      message: error.message,
-      details: error.message.includes("already")
+
+    app.get("/course-change-requests", async (req, res) => {
+      try {
+        // Optionally, you can filter based on status or studentId
+        const { status, studentId } = req.query;
+        let filter = {};
+
+        // Apply filters if specified
+        if (status) {
+          filter.status = status;
+        }
+        if (studentId) {
+          filter.studentId = new ObjectId(studentId);
+        }
+
+        // Fetch batch change requests from the database
+        const courseChangeRequests = await courseChangeRequestCollection
+          .find(filter)
+          .toArray();
+
+        res.status(200).json(courseChangeRequests);
+      } catch (error) {
+        console.error("Error fetching batch change requests:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
+    });
+
+    app.patch(
+      "/course-change-requests/:requestId/approve",
+      async (req, res) => {
+        const session = client.startSession();
+
+        try {
+          console.log("=== STARTING REQUEST APPROVAL ===");
+          const { requestId } = req.params;
+          const { batchId } = req.body;
+
+          console.log("Received parameters:", { requestId, batchId });
+
+          // Validate IDs
+          if (!ObjectId.isValid(requestId) || !ObjectId.isValid(batchId)) {
+            const errorMsg = `Invalid ID format - requestId: ${requestId}, batchId: ${batchId}`;
+            console.error(errorMsg);
+            throw new Error(errorMsg);
+          }
+
+          await session.withTransaction(async () => {
+            console.log("Transaction started");
+
+            // First check if request exists and is pending
+            console.log("Checking request status...");
+            const requestCheck = await courseChangeRequestCollection.findOne(
+              { _id: new ObjectId(requestId) },
+              { session }
+            );
+
+            console.log("Request check result:", requestCheck);
+
+            if (!requestCheck) {
+              throw new Error("Request not found");
+            }
+
+            if (requestCheck.status !== "Pending") {
+              throw new Error(`Request already ${requestCheck.status}`);
+            }
+
+            // Get student info
+            console.log("Fetching student info...");
+            const student = await studentsCollection.findOne(
+              { _id: requestCheck.studentId },
+              { session }
+            );
+
+            console.log("Student found:", student);
+
+            // Update the request
+            console.log("Updating request status to Approved...");
+            const updateRequestResult =
+              await courseChangeRequestCollection.findOneAndUpdate(
+                {
+                  _id: new ObjectId(requestId),
+                  status: "Pending",
+                },
+                {
+                  $set: {
+                    status: "Approved",
+                    assignedBatchId: new ObjectId(batchId),
+                    resolvedAt: new Date(),
+                  },
+                },
+                {
+                  returnDocument: "after",
+                  session,
+                }
+              );
+
+            const approvedRequest = updateRequestResult;
+            console.log("Request update result:", approvedRequest);
+
+            // If student is already in a batch, decrement that batch's occupiedSeat
+            if (student && student.enrolled_batch) {
+              console.log(
+                `Student currently in batch ${student.enrolled_batch}, decrementing seat...`
+              );
+              const decrementResult = await batchesCollection.updateOne(
+                { _id: student.enrolled_batch },
+                { $inc: { occupiedSeat: -1 } },
+                { session }
+              );
+
+              console.log("Decrement result:", decrementResult);
+            } else {
+              console.log("Student not currently in any batch");
+            }
+
+            // Update the new batch's occupiedSeat
+            console.log(`Incrementing seat count for batch ${batchId}...`);
+            const batchUpdateResult = await batchesCollection.findOneAndUpdate(
+              { _id: new ObjectId(batchId) },
+              { $inc: { occupiedSeat: 1 } },
+              {
+                session,
+                returnDocument: "after",
+              }
+            );
+
+            const updatedBatch = batchUpdateResult;
+            console.log("Batch update result:", updatedBatch);
+
+            // Update student record
+            console.log("Updating student record...");
+            const studentUpdateResult = await studentsCollection.updateOne(
+              { _id: requestCheck.studentId },
+              {
+                $set: {
+                  prefCourse: requestCheck.requestedCourse,
+                  enrolled_batch: new ObjectId(batchId),
+                },
+              },
+              { session }
+            );
+
+            console.log("Student update result:", studentUpdateResult);
+
+            res.status(200).json({
+              success: true,
+              message: "Request approved successfully",
+              request: approvedRequest,
+              batch: updatedBatch,
+            });
+
+            console.log("=== TRANSACTION COMPLETED SUCCESSFULLY ===");
+          });
+        } catch (error) {
+          console.error("\n!!! ERROR IN APPROVAL PROCESS !!!");
+          console.error("Error message:", error.message);
+          console.error("Stack trace:", error.stack);
+
+          const statusCode =
+            error.message.includes("not found") ||
+            error.message.includes("already") ||
+            error.message.includes("no available seats")
+              ? 400
+              : 500;
+
+          res.status(statusCode).json({
+            success: false,
+            message: error.message,
+            details: error.message.includes("already")
               ? "Please refresh the page to see current status"
-              : "Please verify your data and try again"
-    });
-  } finally {
-    console.log('Ending session...');
-    await session.endSession();
-    console.log('=== PROCESS COMPLETED ===\n');
-  }
-});
-
-
-
-// Reject course change request
-app.patch("/course-change-requests/:requestId/reject", async (req, res) => {
-  const session = client.startSession();
-  try {
-    const { requestId } = req.params;
-    const { reason } = req.body;
-
-    await session.withTransaction(async () => {
-      const request = await courseChangeRequestCollection.findOneAndUpdate(
-        { _id: new ObjectId(requestId), status: "Pending" },
-        { 
-          $set: { 
-            status: "Rejected",
-            rejectionReason: reason || "",
-            resolvedAt: new Date() 
-          }
-        },
-        { returnDocument: 'after', session }
-      );
-
-      if (!request.value) {
-        throw new Error("Request not found or already processed");
+              : "Please verify your data and try again",
+          });
+        } finally {
+          console.log("Ending session...");
+          await session.endSession();
+          console.log("=== PROCESS COMPLETED ===\n");
+        }
       }
+    );
 
-      res.status(200).json({
-        message: "Request rejected successfully",
-        request: request.value
-      });
+    // Reject course change request endpoint
+    app.patch("/course-change-requests/:requestId/reject", async (req, res) => {
+      const session = client.startSession();
+      try {
+        const { requestId } = req.params;
+        const { reason } = req.body;
+
+        // Validate request ID
+        if (!ObjectId.isValid(requestId)) {
+          return res.status(400).json({
+            success: false,
+            message: "Invalid request ID format",
+          });
+        }
+
+        await session.withTransaction(async () => {
+          const result = await db
+            .collection("courseChangeRequests")
+            .findOneAndUpdate(
+              {
+                _id: new ObjectId(requestId),
+                status: "Pending",
+              },
+              {
+                $set: {
+                  status: "Rejected",
+                  rejectionReason: reason || "No reason provided",
+                  processedAt: new Date(),
+                },
+              },
+              {
+                returnDocument: "after",
+                session,
+              }
+            );
+
+          if (!result.value) {
+            return res.status(404).json({
+              success: false,
+              message: "Request not found or already processed",
+            });
+          }
+
+          res.status(200).json({
+            success: true,
+            message: "Request rejected successfully",
+            data: result.value,
+          });
+        });
+      } catch (error) {
+        console.error("Rejection error:", error);
+        res.status(500).json({
+          success: false,
+          message: "Internal server error",
+          error: error.message,
+        });
+      } finally {
+        await session.endSession();
+      }
     });
-  } catch (error) {
-    console.error("Rejection error:", error);
-    res.status(500).json({ 
-      message: "Failed to reject request",
-      error: error.message 
-    });
-  } finally {
-    await session.endSession();
-  }
-});
-    
 
     await client.db("admin").command({ ping: 1 });
     console.log(
@@ -2535,8 +2647,6 @@ app.patch("/course-change-requests/:requestId/reject", async (req, res) => {
     // await client.close();
   }
 }
-
-
 
 run().catch(console.dir);
 
