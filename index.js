@@ -57,7 +57,7 @@ async function run() {
       try {
         const user = req.body;
         const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, {
-          expiresIn: "30min",
+          expiresIn: "7d",
         });
         res.send({ token });
       } catch (error) {
@@ -94,6 +94,45 @@ async function run() {
       next();
     };
 
+    // Login API to authenticate the user and generate a JWT token
+    app.post("/login", async (req, res) => {
+      const { email, password } = req.body;
+
+      try {
+        // Find user by email
+        const user = await userCollection.findOne({ email });
+
+        // If no user found, return an error
+        if (!user) {
+          return res
+            .status(400)
+            .send({ message: "Email or password is not correct" });
+        }
+
+        // Compare the provided password with the stored hashed password
+        const isPasswordValid = await bcrypt.compare(password, user.password);
+
+        if (!isPasswordValid) {
+          return res
+            .status(401)
+            .send({ message: "Email or password is not correct" });
+        }
+
+        // Generate JWT token
+        const token = jwt.sign(
+          { email: user.email, userId: user._id, type: user.type },
+          process.env.ACCESS_TOKEN_SECRET,
+          { expiresIn: "7d" }
+        );
+
+        // Send the token back to the client
+        res.send({ token, user });
+      } catch (error) {
+        console.error("Error during login:", error);
+        res.status(500).send({ message: "Internal server error" });
+      }
+    });
+
     // Users API
     app.get("/users", async (req, res) => {
       const result = await userCollection.find().toArray();
@@ -112,22 +151,34 @@ async function run() {
 
     app.get("/users/instructor/:email", async (req, res) => {
       const { email } = req.params;
-
+    
       try {
-        const user = await userCollection.findOne({ email });
-
+        // Case-insensitive email search
+        const user = await userCollection.findOne({ 
+          email: { $regex: new RegExp(`^${email}$`, 'i') } 
+        });
+    
         if (!user) {
-          return res.status(404).json({ isInstructor: false });
+          console.log(`User not found with email: ${email}`);
+          return res.status(404).json({ 
+            isInstructor: false,
+            message: "User not found"
+          });
         }
-
+    
+        console.log(`Found user: ${user.email}, type: ${user.type}`);
+        const isInstructor = user.type === "instructor";
+        
         return res.json({
-          isInstructor: user.type === "instructor",
+          isInstructor,
+          type: user.type // Include the actual type for debugging
         });
       } catch (error) {
-        console.error("Error checking if user is an instructor:", error);
+        console.error("Error checking instructor status:", error);
         return res.status(500).json({
           isInstructor: false,
           message: "Internal server error",
+          error: error.message
         });
       }
     });
@@ -464,45 +515,6 @@ async function run() {
       } catch (error) {
         console.error("Error updating student:", error);
         res.status(500).json({ message: "Server error" });
-      }
-    });
-
-    // Login API to authenticate the user and generate a JWT token
-    app.post("/login", async (req, res) => {
-      const { email, password } = req.body;
-
-      try {
-        // Find user by email
-        const user = await userCollection.findOne({ email });
-
-        // If no user found, return an error
-        if (!user) {
-          return res
-            .status(400)
-            .send({ message: "Email or password is not correct" });
-        }
-
-        // Compare the provided password with the stored hashed password
-        const isPasswordValid = await bcrypt.compare(password, user.password);
-
-        if (!isPasswordValid) {
-          return res
-            .status(401)
-            .send({ message: "Email or password is not correct" });
-        }
-
-        // Generate JWT token
-        const token = jwt.sign(
-          { email: user.email, userId: user._id, type: user.type },
-          process.env.ACCESS_TOKEN_SECRET,
-          { expiresIn: "1h" } // Token expiration time (can be adjusted)
-        );
-
-        // Send the token back to the client
-        res.send({ token, user });
-      } catch (error) {
-        console.error("Error during login:", error);
-        res.status(500).send({ message: "Internal server error" });
       }
     });
 
@@ -1170,7 +1182,6 @@ async function run() {
       }
     });
 
-
     app.get("/routine/:batchId", async (req, res) => {
       const { batchId } = req.params;
 
@@ -1277,40 +1288,39 @@ async function run() {
     });
 
     // DELETE endpoint for routine
-app.delete("/routine/:routineId", async (req, res) => {
-  try {
-    const { routineId } = req.params;
+    app.delete("/routine/:routineId", async (req, res) => {
+      try {
+        const { routineId } = req.params;
 
-    if (!ObjectId.isValid(routineId)) {
-      return res.status(400).send({ error: "Invalid routine ID format" });
-    }
+        if (!ObjectId.isValid(routineId)) {
+          return res.status(400).send({ error: "Invalid routine ID format" });
+        }
 
-    const result = await routineCollection.deleteOne({ 
-      _id: new ObjectId(routineId) 
+        const result = await routineCollection.deleteOne({
+          _id: new ObjectId(routineId),
+        });
+
+        if (result.deletedCount === 0) {
+          return res.status(404).send({ error: "Routine not found" });
+        }
+
+        res.status(200).send({
+          success: true,
+          message: "Routine deleted successfully",
+        });
+      } catch (error) {
+        console.error("Error deleting routine:", error);
+        res.status(500).send({ error: "Internal server error" });
+      }
     });
-
-    if (result.deletedCount === 0) {
-      return res.status(404).send({ error: "Routine not found" });
-    }
-
-    res.status(200).send({ 
-      success: true, 
-      message: "Routine deleted successfully" 
-    });
-  } catch (error) {
-    console.error("Error deleting routine:", error);
-    res.status(500).send({ error: "Internal server error" });
-  }
-});
-    
 
     app.get("/instructors/:instructorId/classes", async (req, res) => {
       const { instructorId } = req.params;
-    
+
       if (!isValidObjectId(instructorId)) {
         return res.status(400).json({ message: "Invalid instructorId format" });
       }
-    
+
       try {
         // 1. Get all batches where this instructor is assigned
         const assignedBatches = await instructorsBatchesCollection
@@ -1318,7 +1328,7 @@ app.delete("/routine/:routineId", async (req, res) => {
             instructorId: new ObjectId(instructorId),
           })
           .toArray();
-    
+
         if (assignedBatches.length === 0) {
           return res.status(200).json({
             success: true,
@@ -1329,46 +1339,46 @@ app.delete("/routine/:routineId", async (req, res) => {
             batchStatuses: {},
           });
         }
-    
+
         const batchIds = assignedBatches.map((b) => new ObjectId(b.batchId));
-    
+
         // 2. Get batch statuses for all assigned batches
         const batches = await batchesCollection
           .find({
             _id: { $in: batchIds },
           })
           .toArray();
-    
+
         // Create a map of batchId to status
         const batchStatuses = batches.reduce((acc, batch) => {
           acc[batch._id.toString()] = batch.status;
           return acc;
         }, {});
-    
+
         // 3. Get ALL routines for these batches
         const allRoutines = await routineCollection
           .find({
             batchId: { $in: batchIds },
           })
           .toArray();
-    
+
         // Filter out routines from completed batches
-        const routines = allRoutines.filter(routine => {
+        const routines = allRoutines.filter((routine) => {
           const status = batchStatuses[routine.batchId.toString()];
-          return status !== 'Completed';
+          return status !== "Completed";
         });
-    
+
         // 4. Organize by day and detect overlaps
         const scheduleByDay = {};
         const conflicts = [];
-    
+
         routines.forEach((routine) => {
           const { day, startTime, endTime } = routine;
-    
+
           if (!scheduleByDay[day]) {
             scheduleByDay[day] = [];
           }
-    
+
           // Check for overlaps with existing classes on this day
           scheduleByDay[day].forEach((existingClass) => {
             if (
@@ -1392,7 +1402,7 @@ app.delete("/routine/:routineId", async (req, res) => {
               });
             }
           });
-    
+
           // Add to schedule
           scheduleByDay[day].push({
             batchId: routine.batchId,
@@ -1400,7 +1410,7 @@ app.delete("/routine/:routineId", async (req, res) => {
             endTime,
           });
         });
-    
+
         // 5. Check maximum classes per day (2 classes max)
         Object.entries(scheduleByDay).forEach(([day, classes]) => {
           if (classes.length > 2) {
@@ -1410,13 +1420,13 @@ app.delete("/routine/:routineId", async (req, res) => {
             });
           }
         });
-    
+
         // Calculate class counts per day (excluding completed batches)
         const classCounts = Object.keys(scheduleByDay).reduce((acc, day) => {
           acc[day] = scheduleByDay[day].length;
           return acc;
         }, {});
-    
+
         if (conflicts.length > 0) {
           return res.status(409).json({
             success: false,
@@ -1437,7 +1447,7 @@ app.delete("/routine/:routineId", async (req, res) => {
             batchStatuses,
           });
         }
-    
+
         res.status(200).json({
           success: true,
           schedule: scheduleByDay,
@@ -1672,7 +1682,8 @@ app.delete("/routine/:routineId", async (req, res) => {
                   result.Final_Exam !== undefined ? result.Final_Exam : null,
                 Attendance:
                   result.Attendance !== undefined ? result.Attendance : null,
-                createdAt: new Date(),
+                  isPublished: false, 
+                  createdAt: new Date(),
               },
             },
             upsert: true, // Insert if not found
@@ -1751,6 +1762,92 @@ app.delete("/routine/:routineId", async (req, res) => {
       }
     });
 
+
+    // New API endpoint to get results by user ID
+    app.get('/results-by-user/:userId', async (req, res) => {
+      try {
+        const { userId } = req.params;
+    
+        // 1. Find the student
+        const student = await studentsCollection.findOne({ 
+          userId: new ObjectId(userId) 
+        });
+        
+        if (!student) {
+          return res.status(404).json({ 
+            success: false,
+            message: "Student record not found",
+            code: "STUDENT_NOT_FOUND"
+          });
+        }
+    
+        // 2. Get only published results
+        const results = await resultCollection.find({ 
+          studentID: student.studentID,
+          isPublished: true
+        }).toArray();
+    
+        // 3. Handle no results case
+        if (results.length === 0) {
+          return res.status(200).json({
+            success: true,
+            message: "No published results available yet",
+            data: [],
+            code: "NO_PUBLISHED_RESULTS"
+          });
+        }
+    
+        // 4. Process results
+        const enhancedResults = results.map(result => {
+          const examTypes = ['Mid_Term', 'Project', 'Assignment', 'Final_Exam', 'Attendance'];
+          const hasNullMarks = examTypes.some(type => result[type] === null);
+          const total = examTypes.reduce((sum, type) => sum + (result[type] || 0), 0);
+          const status = hasNullMarks || total < 60 ? 'Fail' : 'Pass';
+    
+          return { ...result, status, total };
+        });
+    
+        // 5. Get batch/course info (with fixed syntax)
+        const batchIds = [...new Set(results.map(r => r.batchId))];
+        const courseIds = [...new Set(results.map(r => r.courseId))]; // Assuming courseId exists in results
+        
+        const [batches, courses] = await Promise.all([
+          batchesCollection.find({
+            _id: { $in: batchIds.map(id => new ObjectId(id)) }
+          }).toArray(),
+          coursesCollection.find({
+            _id: { $in: courseIds.map(id => new ObjectId(id)) }
+          }).toArray()
+        ]);
+    
+        // 6. Create lookup maps
+        const batchMap = Object.fromEntries(batches.map(b => [b._id.toString(), b]));
+        const courseMap = Object.fromEntries(courses.map(c => [c._id.toString(), c]));
+    
+        // 7. Finalize response
+        const finalResults = enhancedResults.map(result => ({
+          ...result,
+          courseName: courseMap[result.courseId]?.courseName || 'N/A',
+          batchName: batchMap[result.batchId]?.batchName || 'N/A'
+        }));
+    
+        res.status(200).json({
+          success: true,
+          data: finalResults
+        });
+    
+      } catch (error) {
+        console.error("Results API Error:", error);
+        res.status(500).json({ 
+          success: false,
+          message: "Internal server error",
+          code: "SERVER_ERROR",
+          details: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+      }
+    });
+
+    
     app.get("/batch/:batchId/students", async (req, res) => {
       const { batchId } = req.params;
 
@@ -1815,6 +1912,78 @@ app.delete("/routine/:routineId", async (req, res) => {
         res.status(500).json({ message: "Internal server error" });
       }
     });
+
+    function calculateStatus(studentData) {
+      // Treat null values as 0 for calculation
+      const assignment = studentData.Assignment || 0;
+      const attendance = studentData.Attendance || 0;
+      const finalExam = studentData.Final_Exam || 0;
+      const midTerm = studentData.Mid_Term || 0;
+      const project = studentData.Project || 0;
+      
+      // Calculate total marks
+      const total = assignment + attendance + finalExam + midTerm + project;
+      
+      // Check if any field is null
+      const hasNullFields = [
+          studentData.Assignment,
+          studentData.Attendance,
+          studentData.Final_Exam,
+          studentData.Mid_Term,
+          studentData.Project
+      ].some(field => field === null);
+      
+      // Determine status
+      return {
+          total,
+          status: (total > 60 && !hasNullFields) ? 'Pass' : 'Fail'
+      };
+  }
+
+
+  // GET batch-wise statistics
+app.get('/results/batch/:batchId/stats', async (req, res) => {
+  try {
+      const batchId = req.params.batchId;
+      
+      // Get all results for the batch
+      const results = await resultCollection.find({ batchId }).toArray();
+      
+      if (results.length === 0) {
+          return res.status(404).json({ message: "No results found for this batch" });
+      }
+      
+      let passCount = 0;
+      let failCount = 0;
+      
+      // Calculate pass/fail for each student
+      results.forEach(studentData => {
+          const { status } = calculateStatus(studentData);
+          if (status === 'Pass') {
+              passCount++;
+          } else {
+              failCount++;
+          }
+      });
+      
+      const totalStudents = results.length;
+      const passPercentage = (passCount / totalStudents * 100).toFixed(2);
+      const failPercentage = (failCount / totalStudents * 100).toFixed(2);
+      
+      const stats = {
+          batchId,
+          totalStudents,
+          passCount,
+          failCount,
+      
+      };
+      
+      res.json(stats);
+  } catch (error) {
+      console.error("Error getting batch stats:", error);
+      res.status(500).json({ message: "Internal server error" });
+  }
+});
 
     app.delete("/instructors-batches/:id", async (req, res) => {
       const { id } = req.params;
@@ -2091,7 +2260,7 @@ app.delete("/routine/:routineId", async (req, res) => {
           // 5. Mark request as approved
           const requestUpdate = await batchChangeRequestCollection.updateOne(
             { _id: new ObjectId(requestId) },
-            { $set: { status: "approved", processedAt: new Date() } },
+            { $set: { status: "Approved", processedAt: new Date() } },
             { session }
           );
 
@@ -2126,7 +2295,7 @@ app.delete("/routine/:routineId", async (req, res) => {
           },
           {
             $set: {
-              status: "rejected",
+              status: "Rejected",
               rejectedAt: new Date(),
               rejectionReason: req.body.reason || null, // Optional rejection reason
             },
@@ -2240,7 +2409,7 @@ app.delete("/routine/:routineId", async (req, res) => {
     app.patch("/batch-change-requests/swap", async (req, res) => {
       const { requestId1, requestId2 } = req.body;
       const session = client.startSession();
-
+    
       try {
         await session.withTransaction(async () => {
           // Get both requests with all necessary data
@@ -2266,46 +2435,40 @@ app.delete("/routine/:routineId", async (req, res) => {
                 return { ...req, student };
               }),
           ]);
-
+    
           if (!request1 || !request2) {
             throw new Error("One or both requests not found");
           }
-
+    
           // Verify the swap makes sense
           if (
-            String(request1.requestedBatch) !==
-              String(request2.student.enrolled_batch) ||
-            String(request2.requestedBatch) !==
-              String(request1.student.enrolled_batch)
+            String(request1.requestedBatch) !== String(request2.student.enrolled_batch) ||
+            String(request2.requestedBatch) !== String(request1.student.enrolled_batch)
           ) {
             throw new Error("Invalid swap - batches don't match");
           }
-
+    
           // Update both students' enrolled batches
           await Promise.all([
             studentsCollection.updateOne(
               { _id: request1.student._id },
-              {
-                $set: { enrolled_batch: new ObjectId(request2.requestedBatch) },
-              },
+              { $set: { enrolled_batch: new ObjectId(request2.requestedBatch) } },
               { session }
             ),
             studentsCollection.updateOne(
               { _id: request2.student._id },
-              {
-                $set: { enrolled_batch: new ObjectId(request1.requestedBatch) },
-              },
+              { $set: { enrolled_batch: new ObjectId(request1.requestedBatch) } },
               { session }
             ),
           ]);
-
+    
           // Update both requests as approved
           await Promise.all([
             batchChangeRequestCollection.updateOne(
               { _id: request1._id },
               {
                 $set: {
-                  status: "approved",
+                  status: "Approved",
                   processedAt: new Date(),
                   swapWith: request2._id,
                 },
@@ -2316,7 +2479,7 @@ app.delete("/routine/:routineId", async (req, res) => {
               { _id: request2._id },
               {
                 $set: {
-                  status: "approved",
+                  status: "Approved",
                   processedAt: new Date(),
                   swapWith: request1._id,
                 },
@@ -2324,22 +2487,12 @@ app.delete("/routine/:routineId", async (req, res) => {
               { session }
             ),
           ]);
-
-          // Update occupied seats in batches (if needed)
-          await Promise.all([
-            batchesCollection.updateOne(
-              { _id: new ObjectId(request1.requestedBatch) },
-              { $inc: { occupiedSeat: 1 } },
-              { session }
-            ),
-            batchesCollection.updateOne(
-              { _id: new ObjectId(request2.requestedBatch) },
-              { $inc: { occupiedSeat: 1 } },
-              { session }
-            ),
-          ]);
+    
+          // REMOVED: No need to update occupiedSeat counts for a swap
+          // Since we're just exchanging students between batches,
+          // the total count in each batch remains the same
         });
-
+    
         res.status(200).json({ message: "Swap completed successfully" });
       } catch (error) {
         console.error("Error processing swap:", error);
@@ -2578,28 +2731,39 @@ app.delete("/routine/:routineId", async (req, res) => {
       }
     );
 
-    // Reject course change request endpoint
     app.patch("/course-change-requests/:requestId/reject", async (req, res) => {
       const session = client.startSession();
       try {
         const { requestId } = req.params;
         const { reason } = req.body;
-
-        // Validate request ID
+    
         if (!ObjectId.isValid(requestId)) {
           return res.status(400).json({
             success: false,
             message: "Invalid request ID format",
           });
         }
-
+    
         await session.withTransaction(async () => {
-          const result = await db
-            .collection("courseChangeRequests")
-            .findOneAndUpdate(
+          // First check if request exists and is pending
+          const existingRequest = await courseChangeRequestCollection.findOne({
+              _id: new ObjectId(requestId),
+              status: "Pending"
+            }, { session });
+    
+          if (!existingRequest) {
+            return res.status(409).json({ // 409 Conflict
+              success: false,
+              message: "Request not found or already processed",
+              code: "REQUEST_ALREADY_PROCESSED"
+            });
+          }
+    
+          // Then perform the update
+          const result = await courseChangeRequestCollection.findOneAndUpdate(
               {
                 _id: new ObjectId(requestId),
-                status: "Pending",
+                status: "Pending"
               },
               {
                 $set: {
@@ -2613,14 +2777,7 @@ app.delete("/routine/:routineId", async (req, res) => {
                 session,
               }
             );
-
-          if (!result.value) {
-            return res.status(404).json({
-              success: false,
-              message: "Request not found or already processed",
-            });
-          }
-
+    
           res.status(200).json({
             success: true,
             message: "Request rejected successfully",
@@ -2638,6 +2795,114 @@ app.delete("/routine/:routineId", async (req, res) => {
         await session.endSession();
       }
     });
+
+// Updated cancellation endpoint for courses
+app.patch("/course-change-requests/:requestId/cancel", async (req, res) => {
+  const session = client.startSession();
+  try {
+    const { requestId } = req.params;
+    const { reason } = req.body;
+
+    if (!ObjectId.isValid(requestId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid request ID format",
+      });
+    }
+
+    await session.withTransaction(async () => {
+      // First check if request exists and is pending
+      const existingRequest = await courseChangeRequestCollection.findOne({
+          _id: new ObjectId(requestId),
+          status: "Pending"
+        }, { session });
+
+      if (!existingRequest) {
+        return res.status(409).json({ // 409 Conflict
+          success: false,
+          message: "Request not found or already processed",
+          code: "REQUEST_ALREADY_PROCESSED"
+        });
+      }
+
+      // Then perform the update
+      const result = await courseChangeRequestCollection.findOneAndUpdate(
+          {
+            _id: new ObjectId(requestId),
+            status: "Pending"
+          },
+          {
+            $set: {
+              status: "Cancelled",
+           
+              processedAt: new Date(),
+            },
+          },
+          {
+            returnDocument: "after",
+            session,
+          }
+        );
+
+      res.status(200).json({
+        success: true,
+        message: "Request rejected successfully",
+        data: result.value,
+      });
+    });
+  } catch (error) {
+    console.error("Rejection error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  } finally {
+    await session.endSession();
+  }
+});
+
+
+// For cancelling batch change requests
+app.patch("/batch-change-requests/:requestId/cancel", async (req, res) => {
+  const { requestId } = req.params;
+
+  if (!isValidObjectId(requestId)) {
+    return res.status(400).json({ error: "Invalid request ID format" });
+  }
+
+  try {
+    const result = await batchChangeRequestCollection.updateOne(
+      {
+        _id: new ObjectId(requestId),
+        status: "Pending",
+      },
+      {
+        $set: {
+          status: "Cancelled",
+          cancelledAt: new Date(),
+          cancellationReason: "Cancelled by student",
+        },
+      }
+    );
+
+    if (result.modifiedCount === 0) {
+      return res.status(404).json({
+        message: "Request not found or already processed",
+      });
+    }
+
+    res.status(200).json({ message: "Request cancelled successfully" });
+  } catch (error) {
+    console.error("Error cancelling request:", error);
+    res.status(500).json({
+      message: "Failed to cancel request",
+      error: error.message,
+    });
+  }
+}); 
+
+ 
 
     await client.db("admin").command({ ping: 1 });
     console.log(
