@@ -2505,6 +2505,79 @@ app.get('/results/batch/:batchId/stats', async (req, res) => {
       }
     });
 
+   
+
+    app.get('/batch-change-requests/status/:userId', async (req, res) => {
+      try {
+        const { userId } = req.params;
+    
+        if (!ObjectId.isValid(userId)) {
+          return res.status(400).json({ error: "Invalid user ID" });
+        }
+    
+        // Step 1: Find student by userId
+        const student = await studentsCollection.findOne({ userId: new ObjectId(userId) });
+    
+        if (!student) {
+          return res.status(404).json({ error: "Student not found" });
+        }
+    
+        // Step 2: Check for existing request with student._id
+        const existingRequest = await batchChangeRequestCollection.findOne({
+          studentId: student._id,
+          status: { $in: ["Approved", "Rejected", "Pending"] }
+        });
+    
+        res.status(200).json({
+          canRequest: !existingRequest,
+          existingStatus: existingRequest?.status
+        });
+      } catch (error) {
+        console.error("Error checking request status:", error);
+        res.status(500).json({ error: "Internal server error" });
+      }
+    });
+
+    // For cancelling batch change requests
+app.patch("/batch-change-requests/:requestId/cancel", async (req, res) => {
+  const { requestId } = req.params;
+
+  if (!isValidObjectId(requestId)) {
+    return res.status(400).json({ error: "Invalid request ID format" });
+  }
+
+  try {
+    const result = await batchChangeRequestCollection.updateOne(
+      {
+        _id: new ObjectId(requestId),
+        status: "Pending",
+      },
+      {
+        $set: {
+          status: "Cancelled",
+          cancelledAt: new Date(),
+          cancellationReason: "Cancelled by student",
+        },
+      }
+    );
+
+    if (result.modifiedCount === 0) {
+      return res.status(404).json({
+        message: "Request not found or already processed",
+      });
+    }
+
+    res.status(200).json({ message: "Request cancelled successfully" });
+  } catch (error) {
+    console.error("Error cancelling request:", error);
+    res.status(500).json({
+      message: "Failed to cancel request",
+      error: error.message,
+    });
+  }
+}); 
+    
+
     app.post("/course-change-requests", async (req, res) => {
       try {
         const { studentId, requestedCourse } = req.body;
@@ -2862,45 +2935,38 @@ app.patch("/course-change-requests/:requestId/cancel", async (req, res) => {
   }
 });
 
-
-// For cancelling batch change requests
-app.patch("/batch-change-requests/:requestId/cancel", async (req, res) => {
-  const { requestId } = req.params;
-
-  if (!isValidObjectId(requestId)) {
-    return res.status(400).json({ error: "Invalid request ID format" });
-  }
-
+app.get('/course-change-requests/status/:userId', async (req, res) => {
   try {
-    const result = await batchChangeRequestCollection.updateOne(
-      {
-        _id: new ObjectId(requestId),
-        status: "Pending",
-      },
-      {
-        $set: {
-          status: "Cancelled",
-          cancelledAt: new Date(),
-          cancellationReason: "Cancelled by student",
-        },
-      }
-    );
+    const { userId } = req.params;
 
-    if (result.modifiedCount === 0) {
-      return res.status(404).json({
-        message: "Request not found or already processed",
-      });
+    if (!ObjectId.isValid(userId)) {
+      return res.status(400).json({ error: "Invalid user ID" });
     }
 
-    res.status(200).json({ message: "Request cancelled successfully" });
-  } catch (error) {
-    console.error("Error cancelling request:", error);
-    res.status(500).json({
-      message: "Failed to cancel request",
-      error: error.message,
+    // Step 1: Find student by userId
+    const student = await studentsCollection.findOne({ userId: new ObjectId(userId) });
+
+    if (!student) {
+      return res.status(404).json({ error: "Student not found" });
+    }
+
+    // Step 2: Check for existing course change request
+    const existingRequest = await courseChangeRequestCollection.findOne({
+      studentId: student._id,
+      status: { $in: ["Approved", "Rejected", "Pending"] }
     });
+
+    res.status(200).json({
+      canRequest: !existingRequest,
+      existingStatus: existingRequest?.status
+    });
+  } catch (error) {
+    console.error("Error checking course request status:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
-}); 
+});
+
+
 
  
 
