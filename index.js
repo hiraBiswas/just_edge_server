@@ -1847,6 +1847,111 @@ async function run() {
       }
     });
 
+    app.get("/results/batch-status/:batchId", async (req, res) => {
+      try {
+        const { batchId } = req.params;
+    
+        // First check if the batch exists
+        const batchExists = await batchesCollection.findOne({ _id: new ObjectId(batchId) });
+        if (!batchExists) {
+          return res.status(404).json({ 
+            message: "Batch not found",
+            details: "The specified batch does not exist"
+          });
+        }
+    
+        const results = await resultCollection.find({ batchId }).toArray();
+    
+        if (results.length === 0) {
+          return res.status(404).json({ 
+            message: "Results not uploaded yet", 
+            details: "No results have been uploaded for this batch",
+            batchExists: true,
+            data: [] 
+          });
+        }
+    
+        const isPublished = results[0].isPublished || false;
+    
+        const studentIDs = results.map(r => r.studentID);
+        const students = await studentsCollection.find({ studentID: { $in: studentIDs } }).toArray();
+        const userIds = students.map(s => s.userId);
+        const users = await userCollection.find({ _id: { $in: userIds } }).toArray();
+    
+        const studentMap = Object.fromEntries(students.map(s => [s.studentID, s]));
+        const userMap = Object.fromEntries(users.map(u => [u._id.toString(), u]));
+    
+        const examTypes = ['Mid_Term', 'Project', 'Assignment', 'Final_Exam', 'Attendance'];
+    
+        const finalData = results.map(result => {
+          const student = studentMap[result.studentID];
+          const user = student ? userMap[student.userId?.toString()] : null;
+          const total = examTypes.reduce((sum, key) => {
+            const value = result[key] === null ? 0 : (result[key] || 0);
+            return sum + value;
+          }, 0);
+          
+          const hasNull = examTypes.some(key => result[key] === null);
+          const status = hasNull || total < 60 ? 'Fail' : 'Pass';
+    
+          // Helper function to format null values
+          const formatValue = (value) => value === null ? "-" : (value || 0);
+    
+          return {
+            studentID: result.studentID,
+            name: user?.name || 'Unknown',
+            total,
+            status,
+            result: {
+              Mid_Term: formatValue(result.Mid_Term),
+              Project: formatValue(result.Project),
+              Assignment: formatValue(result.Assignment),
+              Final_Exam: formatValue(result.Final_Exam),
+              Attendance: formatValue(result.Attendance),
+            }
+          };
+        });
+    
+        res.status(200).json({
+          isPublished,
+          data: finalData
+        });
+    
+      } catch (error) {
+        console.error("Error fetching batch result + status:", error);
+        res.status(500).json({ 
+          message: "Server error", 
+          error: error.message,
+          stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        });
+      }
+    });
+    
+    
+   
+    app.put("/results/publish/:batchId", async (req, res) => {
+      try {
+        const { batchId } = req.params;
+    
+        // Update the 'isPublished' field to true for all results in the selected batch
+        const resultUpdate = await resultCollection.updateMany(
+          { batchId },
+          { $set: { isPublished: true } }
+        );
+    
+        if (resultUpdate.modifiedCount > 0) {
+          return res.status(200).json({ message: "Results published successfully" });
+        } else {
+          return res.status(404).json({ message: "No results found to update" });
+        }
+      } catch (error) {
+        console.error("Error publishing results:", error);
+        res.status(500).json({ message: "Server error", error });
+      }
+    });
+    
+    
+
     
     app.get("/batch/:batchId/students", async (req, res) => {
       const { batchId } = req.params;
